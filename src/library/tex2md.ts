@@ -48,13 +48,162 @@ function maskMath(text: string, store: string[]): string {
 function unmaskMath(text: string, store: string[]): string {
   // Inline → `$…$`; display → fenced `$$` on their own lines (what parseBlocks
   // in src/render/document.ts requires for multi-line display math).
-  text = text.replace(/ INL(\d+) /g, (_, i) => `$${store[+i]}$`)
-  text = text.replace(/ DISP(\d+) /g, (_, i) => {
-    const body = store[+i].replace(/^\s*\n/, '').replace(/\n\s*$/, '')
+  // The delimiter spaces are OPTIONAL on restore: prose transforms (list items,
+  // theorem run-ins, flattened table cells) trim text and can strip a token's
+  // surrounding space — without the `?` those tokens would leak as literal
+  // `INL7`/`DISP3`. With one space present it's consumed exactly as before, so
+  // inter-word spacing is preserved.
+  text = text.replace(/ ?INL(\d+) ?/g, (_, i) => `$${store[+i]}$`)
+  text = text.replace(/ ?DISP(\d+) ?/g, (_, i) => {
+    const body = store[+i]
+      .replace(/^\s*\n/, '')
+      .replace(/\n\s*$/, '')
+      .replace(/\n[ \t]*\n/g, '\n') // blank lines break MathJax inside $$…$$
     return `\n$$\n${body}\n$$\n`
   })
   return text
 }
+
+// Read `count` brace-balanced `{…}` arguments starting at/after `from` (skipping
+// leading whitespace). Returns the arg bodies (without the outer braces) and the
+// index just past the last `}`, or null if the braces don't balance. Used to
+// parse commands whose arguments nest braces more than one level deep — a regex
+// with fixed nesting can't (e.g. `\bilet{63}{… $\mathbb{R}^1$ …}`).
+function readBraceArgs(text: string, from: number, count: number): { args: string[]; end: number } | null {
+  let i = from
+  const args: string[] = []
+  for (let a = 0; a < count; a++) {
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text[i] !== '{') return null
+    let depth = 0
+    const start = i + 1
+    for (; i < text.length; i++) {
+      if (text[i] === '{') depth++
+      else if (text[i] === '}') {
+        depth--
+        if (depth === 0) break
+      }
+    }
+    if (depth !== 0) return null
+    args.push(text.slice(start, i))
+    i++ // step past the closing brace
+  }
+  return { args, end: i }
+}
+
+// Unwrap every `\name{…}` (one brace-balanced arg) via `fn`. Brace-balanced so
+// the arg may contain nested braces or (post-mask) masked-math tokens.
+function unwrapCommand(text: string, name: string, fn: (arg: string) => string): string {
+  const marker = `\\${name}`
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const at = text.indexOf(marker, i)
+    if (at === -1) {
+      out += text.slice(i)
+      break
+    }
+    const r = readBraceArgs(text, at + marker.length, 1)
+    if (!r) {
+      out += text.slice(i, at + marker.length)
+      i = at + marker.length
+      continue
+    }
+    out += text.slice(i, at) + fn(r.args[0])
+    i = r.end
+  }
+  return out
+}
+
+// \texorpdfstring{TEX}{PDF} (hyperref) — gives a heading both a rich (math) form
+// and a plain-text fallback for contexts that can't render math (PDF bookmarks).
+// Our system has the SAME split: the BODY renders math, so it keeps arg 0 (the
+// TeX form) via this helper; the TITLE is plain text and uses the dedicated
+// resolveTexorpdfstringTitle below. Brace-balanced (args may nest, e.g.
+// `{$\mathbb{R}^1$}`) and recursive (nested \texorpdfstring inside the arg).
+function resolveTexorpdfstring(s: string, which: 0 | 1): string {
+  const marker = '\\texorpdfstring'
+  let out = ''
+  let i = 0
+  while (i < s.length) {
+    const at = s.indexOf(marker, i)
+    if (at === -1) {
+      out += s.slice(i)
+      break
+    }
+    out += s.slice(i, at)
+    const r = readBraceArgs(s, at + marker.length, 2)
+    if (!r) {
+      out += marker
+      i = at + marker.length
+      continue
+    }
+    out += r.args[which]
+    i = r.end
+  }
+  return out.includes(marker) ? resolveTexorpdfstring(out, which) : out
+}
+
+// Resolve \texorpdfstring for a TITLE (a text-only context). Per occurrence:
+// when the TeX (math) arg is JUST a single Greek letter (`$\alpha$`), use the
+// Unicode symbol (α reads better than the author's ASCII "alpha"); otherwise use
+// the PDF/plain-text arg, which the author hand-wrote for exactly this case and
+// handles complex forms best (`$x_{k+1}=Bx_k+c$` → "x(k+1)=B x(k)+c").
+function resolveTexorpdfstringTitle(s: string): string {
+  const marker = '\\texorpdfstring'
+  let out = ''
+  let i = 0
+  while (i < s.length) {
+    const at = s.indexOf(marker, i)
+    if (at === -1) {
+      out += s.slice(i)
+      break
+    }
+    out += s.slice(i, at)
+    const r = readBraceArgs(s, at + marker.length, 2)
+    if (!r) {
+      out += marker
+      i = at + marker.length
+      continue
+    }
+    const greek = r.args[0].trim().match(/^\$\\([a-zA-Z]+)\$$/)
+    out += greek && TITLE_MATH_UNICODE[greek[1]] ? TITLE_MATH_UNICODE[greek[1]] : r.args[1]
+    i = r.end
+  }
+  return out.includes(marker) ? resolveTexorpdfstringTitle(out) : out
+}
+
+// Greek + a few symbols → Unicode, for the rare bare `$…$` left in a TITLE (a
+// text-only context). Most title math is wrapped in \texorpdfstring and already
+// resolved to plain text by the time this runs; this is just a safe fallback.
+const TITLE_MATH_UNICODE: Record<string, string> = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε',
+  zeta: 'ζ', eta: 'η', theta: 'θ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ',
+  pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', phi: 'φ', varphi: 'φ', chi: 'χ',
+  psi: 'ψ', omega: 'ω', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ',
+  Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω', infty: '∞',
+}
+
+/** Collapse a bare `$…$` math body to readable plain text for a title. */
+function titleMathToPlain(math: string): string {
+  return math
+    .replace(/\\(?:mathbb|mathcal|mathrm|text|mathbf)\b/g, '') // keep the wrapped letters
+    .replace(/\\([a-zA-Z]+)/g, (_, name) => TITLE_MATH_UNICODE[name] ?? '')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Normalize an extracted title to plain text (math resolved, TeX typography). */
+function cleanTitle(title: string): string {
+  let s = resolveTexorpdfstringTitle(title) // PDF arg, but lone Greek → symbol
+  s = s.replace(/\$([^$]+)\$/g, (_, m) => titleMathToPlain(m)) // any bare math left
+  s = s.replace(/---/g, '—').replace(/--/g, '–')
+  s = s.replace(/~/g, ' ').replace(/\\[,! ]/g, ' ')
+  return s.replace(/\s{2,}/g, ' ').trim()
+}
+
+// Convert one \begin{enumerate|itemize}…\end block body into markdown list rows.
 
 // Convert one \begin{enumerate|itemize}…\end block body into markdown list rows.
 function convertList(env: string, body: string): string {
@@ -91,23 +240,34 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   let t = tex.replace(/\r\n/g, '\n')
 
   // 1. Title + id. Prefer \bilet{N}{Title} (gives a stable cm-NN id); else fall
-  //    back to the first \section{…}; else the filename stem.
+  //    back to the first \section{…}; else the filename stem. Both are read with
+  //    brace-balanced parsing so a title with nested braces (e.g. a math arg like
+  //    `$\mathbb{R}^1$` or `$x_{k+1}$`) is captured whole — a fixed-nesting regex
+  //    silently failed on those, losing the cm-NN id and leaking \bilet{…}.
   let title = fallbackStem
   let id = fallbackStem
-  const bilet = t.match(/\\bilet\{(\d+)\}\{((?:[^{}]|\{[^{}]*\})*)\}/)
-  if (bilet) {
-    title = bilet[2].trim()
-    id = `cm-${bilet[1].padStart(2, '0')}`
-    t = t.replace(bilet[0], '')
+  const biletAt = t.match(/\\bilet\b/)
+  const biletArgs = biletAt ? readBraceArgs(t, biletAt.index! + biletAt[0].length, 2) : null
+  if (biletAt && biletArgs) {
+    id = `cm-${biletArgs.args[0].trim().padStart(2, '0')}`
+    title = biletArgs.args[1].trim()
+    t = t.slice(0, biletAt.index!) + t.slice(biletArgs.end)
   } else {
-    const sec = t.match(/\\section\*?\{((?:[^{}]|\{[^{}]*\})*)\}/)
-    if (sec) {
-      title = sec[1].trim()
-      t = t.replace(sec[0], '')
+    const secAt = t.match(/\\section\*?/)
+    const secArgs = secAt ? readBraceArgs(t, secAt.index! + secAt[0].length, 1) : null
+    if (secAt && secArgs) {
+      title = secArgs.args[0].trim()
+      t = t.slice(0, secAt.index!) + t.slice(secArgs.end)
     } else {
       warnings.push('no \\bilet or \\section — using filename for title/id')
     }
   }
+
+  // 1b. \texorpdfstring: the TITLE is plain text everywhere it's shown → take the
+  //     PDF (plain-text) arg + normalize typography; the BODY renders math → keep
+  //     the TeX arg verbatim.
+  title = cleanTitle(title)
+  t = resolveTexorpdfstring(t, 0)
 
   // 2. Display-math delimiters → $$ (before masking so they get masked too).
   //    NB: a `$$` in a STRING replacement emits a single `$`, so use functions.
@@ -115,7 +275,14 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   // `(?<!\\)` so a row-break-with-spacing `\\[2pt]` inside cases/matrix math is
   // NOT mistaken for a display-open `\[`.
   t = t.replace(/(?<!\\)\\\[/g, dollars).replace(/(?<!\\)\\\]/g, dollars)
+  // \(…\) inline-math delimiters → $…$ (some author notes use these instead of
+  // $). `(?<!\\)` guards a `\\(` row-break-then-paren inside math.
+  t = t.replace(/(?<!\\)\\\(/g, '$').replace(/(?<!\\)\\\)/g, '$')
   t = t.replace(/\\begin\{equation\*?\}/g, dollars).replace(/\\end\{equation\*?\}/g, dollars)
+  // align / align* → display math wrapping an `aligned` env (MathJax renders the
+  // alignment; a bare `align` isn't valid inside `$$`).
+  t = t.replace(/\\begin\{align\*?\}/g, () => '\n$$\n\\begin{aligned}\n')
+  t = t.replace(/\\end\{align\*?\}/g, () => '\n\\end{aligned}\n$$\n')
   // Collapse the just-introduced `$$\n…\n$$` so the bodies mask cleanly.
   t = t.replace(/\$\$\n([\s\S]*?)\n\$\$/g, (_, b) => `$$${b}$$`)
 
@@ -134,6 +301,15 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   })
   if (refCount) warnings.push(`${refCount} \\eqref/\\ref dropped — review affected sentences`)
 
+  // 5b. Custom `cm` author commands (Cyrillic-named). Both wrap text + masked
+  //     math, so unwrap post-mask (brace-balanced; the arg holds INL/DISP tokens):
+  //       \проверить{…}    — editorial "verify against source" caveat
+  //       \нетисточника{…} — "no source available" note (the whole body of the
+  //                          heat-equation stub tickets 20–22)
+  //     Kept (not dropped) as italic notes so no authored caveat is lost.
+  t = unwrapCommand(t, 'проверить', s => ` *(проверить: ${s.trim()})* `)
+  t = unwrapCommand(t, 'нетисточника', s => `*(нет источника: ${s.trim()})*`)
+
   // 6. Theorem-like environments → bold run-in heading.
   for (const [env, word] of Object.entries(THEOREM_ENVS)) {
     const re = new RegExp(`\\\\begin\\{${env}\\}(?:\\[((?:[^\\[\\]]|\\[[^\\]]*\\])*)\\])?`, 'g')
@@ -143,6 +319,21 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
 
   // 7. Proof.
   t = t.replace(/\\begin\{proof\}/g, '\n\n*Доказательство.* ').replace(/\\end\{proof\}/g, '\n')
+
+  // 7b. Tables: the glasses typesetter has no table support, so flatten a
+  //     `tabular` (cell math already masked) into one text line per row, cells
+  //     joined by " | "; drop the `center` wrapper and rules. Runs post-mask so
+  //     `$…$` cells survive; `&`/`\\`/`\hline` are text-mode, still present here.
+  t = t.replace(/\\begin\{tabular\}\{[^}]*\}([\s\S]*?)\\end\{tabular\}/g, (_, body: string) => {
+    const rows = body
+      .replace(/\\hline/g, '')
+      .split(/\\\\/)
+      .map((r: string) => r.trim())
+      .filter(Boolean)
+      .map((r: string) => r.split('&').map((c: string) => c.trim()).join(' | '))
+    return `\n\n${rows.join('\n')}\n\n`
+  })
+  t = t.replace(/\\(?:begin|end)\{center\}/g, '\n')
 
   // 8. Lists (innermost-first via repeated passes; these tickets nest at most once).
   let prev
@@ -154,20 +345,27 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
     )
   } while (t !== prev)
 
-  // 9. Sections / paragraphs.
+  // 9. Sections / paragraphs (subsubsection before subsection so the deeper one
+  //    isn't half-matched).
+  t = t.replace(/\\subsubsection\*?\{([^}]*)\}/g, (_, h) => `\n\n### ${h.trim()}\n`)
   t = t.replace(/\\subsection\*?\{([^}]*)\}/g, (_, h) => `\n\n## ${h.trim()}\n`)
   t = t.replace(/\\section\*?\{([^}]*)\}/g, (_, h) => `\n\n# ${h.trim()}\n`)
   t = t.replace(/\\paragraph\{([^}]*)\}\s*/g, (_, h) => `\n\n**${h.replace(/\.\s*$/, '')}.** `)
 
   // 10. Drop formatting-only commands BEFORE emphasis so e.g. `\emph{\small X}`
   //     trims to `*X*`, not `* X*` (a leading space breaks markdown emphasis).
-  t = t.replace(/\\(?:small|normalfont|bfseries|itshape|footnotesize|centering)\b/g, '')
+  t = t.replace(
+    /\\(?:small|normalfont|bfseries|itshape|footnotesize|centering|medskip|smallskip|bigskip|noindent|indent|par)\b/g,
+    '',
+  )
 
   // 11. Inline emphasis / code (text mode only — math is masked). Trim so a
   //     stray inner space never lands next to the marker.
   t = t.replace(/\\textbf\{([^{}]*)\}/g, (_, s) => `**${s.trim()}**`)
   t = t.replace(/\\(?:emph|textit)\{([^{}]*)\}/g, (_, s) => `*${s.trim()}*`)
   t = t.replace(/\\texttt\{([^{}]*)\}/g, (_, s) => `\`${s.trim()}\``)
+  // \textup / \textrm / \textnormal: upright text wrapper — keep content, drop it.
+  t = t.replace(/\\(?:textup|textrm|textnormal|textsf)\{([^{}]*)\}/g, (_, s) => s)
 
   // 12. Text-mode typography (math is still masked, so safe).
   t = t.replace(/~/g, ' ')
