@@ -6,3 +6,6 @@ dist/
 .env.local
 .DS_Store
 *.log
+
+# Library content is phone-imported at runtime, never bundled.
+content/

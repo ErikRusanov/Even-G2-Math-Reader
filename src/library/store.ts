@@ -9,8 +9,8 @@
 // We store only the RAW file text keyed by `id` (parsing is cheap and is done
 // in `load.makeEntry` on read), so the record is just `{ id, raw, name }`.
 // Everything is best-effort: if IndexedDB is unavailable (private mode / a host
-// that blocks it), every call resolves empty/no-op and the bundled library
-// still works.
+// that blocks it), every call resolves empty/no-op and the library is simply
+// empty for that session.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { makeEntry, type LibraryEntry } from './load'
@@ -62,13 +62,13 @@ export async function loadImported(): Promise<LibraryEntry[]> {
   })
   db.close()
   const stem = (name: string) => name.replace(/\.md$/i, '')
-  return records.map(r => makeEntry(r.raw, stem(r.name), r.name, 'imported'))
+  return records.map(r => makeEntry(r.raw, stem(r.name), r.name))
 }
 
 /** Persist one imported file. Returns the parsed entry. */
 export async function putImported(name: string, raw: string): Promise<LibraryEntry> {
   const stem = name.replace(/\.md$/i, '')
-  const entry = makeEntry(raw, stem, name, 'imported')
+  const entry = makeEntry(raw, stem, name)
   const db = await openDb()
   if (db) {
     await new Promise<void>(resolve => {

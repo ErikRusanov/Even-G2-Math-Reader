@@ -14,7 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import MarkdownIt from 'markdown-it'
-import { loadLibrary, mergeLibrary, type LibraryEntry } from '../library/load'
+import { mergeLibrary, type LibraryEntry } from '../library/load'
 import { loadImported, putImported, deleteImported } from '../library/store'
 import { texToInlineSvg } from '../render'
 import { mountReader, type GlassesControl } from './prompter'
@@ -53,14 +53,15 @@ export interface AppHandle {
 }
 
 export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
-  let library = loadLibrary()
+  // All content is phone-imported; the list starts empty and fills from IndexedDB.
+  let library: LibraryEntry[] = []
   const glasses = hooks.glasses ?? NULL_GLASSES
   let screen: Screen = { kind: 'library' }
   // Glasses-only: which library row is highlighted (the phone uses taps instead).
   let menuSel = 0
 
-  // Pull any phone-imported files out of IndexedDB and merge them in. Async, so
-  // the bundled list paints first; we re-render the library once they arrive.
+  // Pull the phone-imported files out of IndexedDB. Async, so the (empty) list
+  // paints first; we re-render the library once they arrive.
   void loadImported().then(imported => {
     if (imported.length === 0) return
     library = mergeLibrary(library, imported)
@@ -221,11 +222,9 @@ function renderLibrary(
       <div class="row" data-i="${i}">
         <button class="row-open" data-i="${i}">
           <div class="row-title">${escapeHtml(e.title)}</div>
-          <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} formulas${
-            e.source === 'imported' ? ' · imported' : ''
-          } · ${snippet(e.body)}</div>
+          <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} formulas · ${snippet(e.body)}</div>
         </button>
-        ${e.source === 'imported' ? `<button class="row-del" data-i="${i}" title="Remove">✕</button>` : ''}
+        <button class="row-del" data-i="${i}" title="Remove">✕</button>
       </div>`,
     )
     .join('')
