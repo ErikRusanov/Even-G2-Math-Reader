@@ -22,14 +22,25 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   (~220×80 container)**, `formula-large` (288×144) too big; full 576×288 via 4 tiles works **but is
   very slow** (4× serial BLE pushes) → **never repaint the full surface per scroll frame**. Ran via
   Developer Mode + `evenhub qr` → Even Hub tab → Scan QR (no token; **not** Even Terminal).
-- **Next: Iteration 1** — KaTeX → 4-bit pipeline, calibrated to the `formula-small` scale.
+- **2026-06-20 — Iteration 1 DONE (render pipeline):** `src/render/` turns LaTeX → dithered PNG.
+  **Engine switched KaTeX → MathJax** (`mathjax-full` + `liteAdaptor`, SVG path output): KaTeX's
+  HTML can only rasterize via SVG `<foreignObject>`, which **taints the canvas on WebKit** and
+  breaks `getImageData`/`toBlob` — the pipeline needs both. MathJax SVG never taints. Pipeline:
+  `texToSvg` → `rasterizeSvg` (black-on-white) → `ditherTo4bit` (invert → 16-level Floyd–Steinberg
+  → white-on-black) → `encodePng`, fit to one ≤288×144 container so the host never resizes/re-dithers.
+  **Calibrated default `pxPerEx = 8` (ideal), confirmed eyes-on-glass (2026-06-20)** → reference
+  series formula = ~145×51 px (well under `formula-small`, leaving generous vertical room for
+  scroll); every sample reads cleanly. `src/main.ts` is a calibration harness (sweep `{6,7,8,9,10}`
+  × 5 dense formulas, emulated bright-green preview on the phone). Below ~6 the sub/superscript tier
+  starts to blur.
+- **Next: Iteration 2** — library load + file selection (`src/library/`, `.md` + frontmatter).
 
 ## The one thing to understand
 
 The glasses are a **576×288 px monochrome-green (4-bit grayscale) display + input device**. Apps
 are **web apps (HTML/CSS/TypeScript) that run in the Even Hub companion phone app's WebView** —
 **not** on the glasses. The native text path is capped at **~25 chars/line**, so **dense math
-cannot be shown as text**. Math must be **pre-rendered to grayscale bitmaps (KaTeX → canvas →
+cannot be shown as text**. Math must be **pre-rendered to grayscale bitmaps (MathJax SVG → canvas →
 4-bit dithered image)** on the phone and pushed to the glasses as **images**, paged/scrolled like
 a teleprompter.
 
@@ -38,7 +49,9 @@ a teleprompter.
 - **Vite + TypeScript**, scaffolded from `even-realities/evenhub-templates`
 - `@evenrealities/even_hub_sdk` (glasses comms) · `@evenrealities/evenhub-cli` (auth + QR
   sideload deploy) · `@evenrealities/evenhub-simulator` (local dev)
-- **KaTeX** + `markdown-it` (math parse/render) · Canvas 2D (rasterize + Floyd–Steinberg dither)
+- **MathJax** (`mathjax-full`, SVG path output — chosen over KaTeX in Iter. 1 to avoid the
+  `<foreignObject>` canvas-taint that breaks pixel read-back on WebKit) + `markdown-it` (math
+  parse/render) · Canvas 2D (rasterize + Floyd–Steinberg dither)
 - File format: **Markdown + LaTeX (`.md`)** with `$…$` / `$$…$$` and `title`/`id` frontmatter
 
 ## Deploy

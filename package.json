@@ -12,7 +12,8 @@
     "gen:test-images": "node scripts/gen-test-images.mjs"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.10"
+    "@evenrealities/even_hub_sdk": "^0.0.10",
+    "mathjax-full": "^3.2.2"
   },
   "devDependencies": {
     "@evenrealities/evenhub-cli": "^0.1.13",

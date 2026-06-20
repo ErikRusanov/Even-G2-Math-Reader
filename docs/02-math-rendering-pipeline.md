@@ -36,9 +36,17 @@ them to the glasses as images, paging/scrolling through them like a teleprompter
 
 ### Step notes
 
-- **KaTeX over MathJax** for v1: synchronous, fast, no async typesetting races; covers the
-  operators in the source (frac, sum/int with limits, matrices via `pmatrix`, Greek, `\|\cdot\|`,
-  superscript/subscript stacks).
+- ~~**KaTeX over MathJax** for v1~~ → **SUPERSEDED in Iteration 1: use MathJax SVG output.**
+  KaTeX emits **HTML**, which can only be rasterized to a canvas via the SVG `<foreignObject>`
+  trick — and that **taints the canvas on WebKit/WKWebView**, which makes `getImageData` (needed
+  for our dithering) **and** `toBlob`/`toDataURL` (needed to export the PNG) throw. The whole
+  pipeline depends on reading pixels back, so a taint risk is fatal. **MathJax** (`mathjax-full` +
+  `liteAdaptor`, `fontCache: 'local'`) emits **self-contained SVG with glyphs as `<path>`** — no
+  `<foreignObject>`, no font files to load — so it draws to a canvas cleanly and **never taints**,
+  on Android Chromium and iOS WebKit alike. It still covers every operator in the source (frac,
+  `\sum`/`\int` with limits, `pmatrix`, Greek, `\lVert\cdot\rVert`, sub/superscript stacks).
+  Trade-off: `AllPackages` adds ~1.8 MB to the bundle (acceptable for a phone WebView; trimmable
+  to the packages actually used later).
 - **Render at full display width first** (assume 576 px wide working surface), then **slice
   vertically** into page/scroll units. If the SDK image container is truly capped at ~200×100,
   tile each page row into horizontal segments — but first **verify the real limit** (open
@@ -51,6 +59,32 @@ them to the glasses as images, paging/scrolling through them like a teleprompter
 - **Cache** rendered strips by a hash of the source segment so autoscroll never blocks on
   rendering. Pre-render the whole selected file at load time (~20 files × N formulas fits phone
   memory easily).
+
+## Chosen pipeline & parameters (Iteration 1, 2026-06-20)
+
+Implemented in `src/render/` (`mathjax.ts` → SVG, `index.ts` → rasterize + fit + PNG encode,
+`dither.ts` → grayscale/invert/quantize/dither):
+
+```
+LaTeX ──texToSvg()──▶ self-contained SVG (paths)
+      ──rasterizeSvg()──▶ black-ink-on-white RGBA, drawn at the target px size
+      ──ditherTo4bit()──▶ white-on-black, 16-level Floyd–Steinberg
+      ──encodePng()──▶ PNG Uint8Array  →  GlassesAdapter.sendImage()
+```
+
+- **Glyph scale = `pxPerEx` (px per math ex).** Default **`pxPerEx = 8`** (`src/render/index.ts`),
+  picked eyes-on-glass (2026-06-20) as the ideal: every sample reads cleanly and it's pleasantly
+  tight. The reference formula `f(x)=\sum_{i=1}^{n}\frac{a_i x^i}{1-x^2}` rasterizes to **~145×51 px**
+  — well under the `formula-small` target (~220×80), which buys generous vertical room for scrolling
+  (Iteration 3). Below ~6 (`a^{(k-1)}_{k,k}…` at 100×34 px) the sub/superscript tier begins to blur.
+  The sweep `{6, 7, 8, 9, 10}` in `src/main.ts` lets the floor be re-probed.
+- **Invert = white-on-black (on).** MathJax draws dark glyphs; `dither.ts` inverts so ink is
+  BRIGHT, which maps to bright-green-on-dark on the panel.
+- **Dither = Floyd–Steinberg to 16 levels** (`STEP = 255/15`). Headless ASCII checks confirm the
+  fraction bar, `Σ`, `√`, and the `a^{(k-1)}_{k,k}` sub/superscript stack all survive.
+- **Fit-to-one-container.** Output is scaled (aspect-preserving) to ≤288×144 and the returned
+  `width/height` is used **verbatim** as the image-slot size, so the host neither resizes nor
+  re-dithers our bitmap (which would blur it). Multi-container slicing/tiling is Iteration 3.
 
 ## Legibility budget (must test on hardware)
 
