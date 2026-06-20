@@ -44,6 +44,8 @@ export interface GlassesControl {
   /** Restore the native-text layout for menus. */
   exitReading(): Promise<void>
   setStatus(text: string): Promise<void>
+  /** Update the native-text menu region (the on-glass library/file screens). */
+  setMessage(text: string): Promise<void>
   /**
    * Subscribe to normalized glasses gestures (tap / swipe / exit) while reading.
    * Returns an unsubscribe fn. A no-op (returns `() => {}`) when no glasses are
@@ -65,12 +67,19 @@ export function mountReader(
 ): void {
   let disposed = false
   renderLoading(root, entry, 0, 0)
+  // Mirror the loader onto the glasses too. We're still in menu/text mode here
+  // (the image layout is only entered later in runReader), so a native-text
+  // message lands — the phone already shows the same progress.
+  void glasses.setMessage(glassesLoadingText(entry, 0, 0)).catch(() => {})
+  void glasses.setStatus('подготовка страниц…').catch(() => {})
 
   void (async () => {
     let doc: PagedDoc
     try {
       doc = await paginateDocument(entry, (done, total) => {
-        if (!disposed) renderLoading(root, entry, done, total)
+        if (disposed) return
+        renderLoading(root, entry, done, total)
+        void glasses.setMessage(glassesLoadingText(entry, done, total)).catch(() => {})
       })
     } catch (err) {
       if (!disposed) renderError(root, entry, String(err), hooks.onBack)
@@ -210,6 +219,9 @@ async function runReader(
   }
   unsubscribe = glasses.onInput(handleGesture)
   await engine.start()
+  // Autoplay from the first page — opening a file goes straight into reading
+  // (no separate «Старт» tap). play() no-ops on a 1-page doc or if disposed.
+  if (!isDisposed()) engine.play()
 }
 
 // ── Views ────────────────────────────────────────────────────────────────────
@@ -287,6 +299,13 @@ function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
       съедает время чтения. На очках: свайп вверх — следующая страница, вниз —
       предыдущая, тап — пауза/старт.</p>
   `)
+}
+
+/** Native-text loader for the glasses while pages render (mirrors the phone bar). */
+function glassesLoadingText(entry: LibraryEntry, done: number, total: number): string {
+  const head = entry.title.length > 24 ? entry.title.slice(0, 23) + '…' : entry.title
+  const prog = total ? `Загрузка страниц… ${done}/${total}` : 'Рендер математики…'
+  return `${head}\n\n${prog}`
 }
 
 function renderLoading(root: HTMLElement, entry: LibraryEntry, done: number, total: number) {

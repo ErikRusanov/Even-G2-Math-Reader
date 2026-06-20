@@ -17,6 +17,8 @@ import MarkdownIt from 'markdown-it'
 import { loadLibrary, type LibraryEntry } from '../library/load'
 import { texToInlineSvg } from '../render'
 import { mountReader, type GlassesControl } from './prompter'
+import { menuGestureToAction } from '../teleprompter/gestures'
+import type { InputEvent } from '../glasses/types'
 
 const md = new MarkdownIt({ html: false, linkify: false, breaks: false })
 
@@ -25,12 +27,6 @@ type Screen =
   | { kind: 'file'; entry: LibraryEntry }
   | { kind: 'reader'; entry: LibraryEntry }
 
-/** What screen the phone is on — so the host can mirror it onto the glasses. */
-export type ScreenInfo =
-  | { kind: 'library'; count: number }
-  | { kind: 'file'; title: string; id: string }
-  | { kind: 'reader'; title: string; id: string }
-
 /** A glasses control that does nothing — used when no bridge is connected. */
 const NULL_GLASSES: GlassesControl = {
   available: false,
@@ -38,22 +34,29 @@ const NULL_GLASSES: GlassesControl = {
   async showPage() {},
   async exitReading() {},
   async setStatus() {},
+  async setMessage() {},
   onInput() {
     return () => {}
   },
 }
 
 export interface AppHooks {
-  /** Fired on every navigation, so the caller can reflect state on-glass. */
-  onScreenChange?: (info: ScreenInfo) => void
-  /** Glasses control passed through to the reader screen (Iteration 3). */
+  /** Glasses control: drives the on-glass menu + reader (Iteration 3 / 7). */
   glasses?: GlassesControl
 }
 
-export function mountApp(root: HTMLElement, hooks: AppHooks = {}): void {
+/** Handle returned to the host so it can refresh the glasses once connected. */
+export interface AppHandle {
+  /** Call once the glasses bridge is up — (re)paints the current menu screen. */
+  onGlassesReady(): void
+}
+
+export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
   const library = loadLibrary()
   const glasses = hooks.glasses ?? NULL_GLASSES
   let screen: Screen = { kind: 'library' }
+  // Glasses-only: which library row is highlighted (the phone uses taps instead).
+  let menuSel = 0
 
   const open = (entry: LibraryEntry) => {
     screen = { kind: 'file', entry }
@@ -75,18 +78,100 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): void {
   function render() {
     if (screen.kind === 'library') {
       renderLibrary(root, library, open)
-      hooks.onScreenChange?.({ kind: 'library', count: library.length })
     } else if (screen.kind === 'file') {
       renderFile(root, screen.entry, back, read)
-      hooks.onScreenChange?.({ kind: 'file', title: screen.entry.title, id: screen.entry.id })
     } else {
       const entry = screen.entry
-      hooks.onScreenChange?.({ kind: 'reader', title: entry.title, id: entry.id })
       mountReader(root, entry, glasses, { onBack: () => backToFile(entry) })
     }
+    renderGlasses()
   }
 
+  // ── On-glass menu (file selection from the glasses) ──────────────────────────
+  // The phone selects by tapping; the glasses drive the SAME flow with gestures.
+  // Library: swipe ↑/↓ moves the highlight, tap opens the highlighted file.
+  // File:    tap starts reading, double-tap goes back. Reader-mode gestures are
+  // owned by the prompter, so this handler ignores them (screen.kind === 'reader').
+
+  /** Paint the current menu screen onto the glasses' native-text region. */
+  function renderGlasses() {
+    if (screen.kind === 'library') {
+      void glasses.setMessage(glassesLibraryText(library, menuSel))
+      void glasses.setStatus('тап — читать · свайп — листать')
+    } else if (screen.kind === 'file') {
+      void glasses.setMessage(`${truncate(screen.entry.title, 24)}\n\nтап — читать на очках`)
+      void glasses.setStatus('тап — читать · 2× — назад')
+    }
+    // reader: the image tiles own the surface; nothing to push here.
+  }
+
+  function handleMenuGesture(event: InputEvent) {
+    const action = menuGestureToAction(event.type)
+    if (!action) return
+    if (screen.kind === 'library') {
+      if (library.length === 0) return
+      switch (action) {
+        case 'up':
+          menuSel = (menuSel - 1 + library.length) % library.length
+          renderGlasses()
+          break
+        case 'down':
+          menuSel = (menuSel + 1) % library.length
+          renderGlasses()
+          break
+        case 'select':
+          read(library[menuSel]) // tap → straight into reading (skip the File screen)
+          break
+        case 'back':
+          break // already at the root
+      }
+    } else if (screen.kind === 'file') {
+      const entry = screen.entry
+      switch (action) {
+        case 'select':
+          read(entry)
+          break
+        case 'back':
+          back()
+          break
+        case 'up':
+        case 'down':
+          break // single action on the File screen
+      }
+    }
+    // reader: handled by the prompter's own gesture subscription.
+  }
+
+  glasses.onInput(handleMenuGesture)
   render()
+
+  return { onGlassesReady: renderGlasses }
+}
+
+// ── On-glass menu text (native-text path, ~25 chars/line) ─────────────────────
+
+/** Truncate to fit the glasses' narrow native text line. */
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s
+}
+
+/**
+ * Render the library as a windowed native-text list for the glasses. The
+ * highlighted row is marked with "> "; the window scrolls to keep the selection
+ * roughly centered, so even a 20-file library stays navigable on the ~10 lines
+ * the native text path affords.
+ */
+function glassesLibraryText(library: LibraryEntry[], sel: number): string {
+  const total = library.length
+  if (total === 0) return 'Библиотека пуста\n\nНет файлов в /content.'
+  const WINDOW = 5
+  const start = Math.max(0, Math.min(sel - (WINDOW >> 1), total - WINDOW))
+  const end = Math.min(total, start + WINDOW)
+  const rows: string[] = []
+  for (let i = start; i < end; i++) {
+    rows.push(`${i === sel ? '> ' : '  '}${truncate(library[i].title, 22)}`)
+  }
+  return `Библиотека  ${sel + 1}/${total}\n\n${rows.join('\n')}`
 }
 
 // ── Library screen ───────────────────────────────────────────────────────────

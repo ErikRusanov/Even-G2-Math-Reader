@@ -25,15 +25,22 @@ const STEP = 255 / (LEVELS - 1) // 17
 /**
  * Convert anti-aliased RGBA (black-on-white) into a white-on-black, 16-level
  * Floyd–Steinberg–dithered grayscale image of the same dimensions.
+ *
+ * `inkScale` (0..1) dims the bright "ink": after inversion the luminance is
+ * scaled, so the brightest glyph pixels map to a LOWER grey level instead of
+ * full-bright white — the glasses' own brightness (set in the phone) then
+ * governs the absolute level. Scaling happens before quantization, so the result
+ * still snaps to the SAME 16-level grid (multiples of STEP) and the host's gray-4
+ * pass stays a near-identity map. `inkScale = 1` is the original full-bright look.
  */
-export function ditherTo4bit(src: ImageData, invert = true): ImageData {
+export function ditherTo4bit(src: ImageData, invert = true, inkScale = 1): ImageData {
   const { width: w, height: h, data } = src
 
   // Luminance buffer (float, so error diffusion stays precise).
   const lum = new Float32Array(w * h)
   for (let i = 0, p = 0; i < lum.length; i++, p += 4) {
     const v = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2]
-    lum[i] = invert ? 255 - v : v
+    lum[i] = (invert ? 255 - v : v) * inkScale
   }
 
   const out = new ImageData(w, h)

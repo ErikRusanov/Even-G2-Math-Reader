@@ -42,3 +42,40 @@ export function gestureToAction(type: InputType): ReaderAction | null {
       return null
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Library-menu gestures (on-glass file selection — Iteration 7).
+//
+// The phone selects files by tapping; the glasses drive the SAME navigation
+// with gestures. This is the menu counterpart of gestureToAction, kept here so
+// every gesture→intent binding lives in one module.
+//
+//   scrollUp   → move the highlight UP   (toward earlier files)
+//   scrollDown → move the highlight DOWN (toward later files)
+//   tap        → select (open the highlighted file / start reading)
+//   doubleTap  → back  (File → Library)
+//   exit       → app closed on the glasses → treat as back
+//
+// Swap the two scroll* cases if hardware reports the direction inverted (the
+// same documented assumption as the reader map above).
+// ─────────────────────────────────────────────────────────────────────────
+
+export type MenuAction = 'up' | 'down' | 'select' | 'back'
+
+/** Map a normalized glasses gesture to a library-menu action, or null to ignore. */
+export function menuGestureToAction(type: InputType): MenuAction | null {
+  switch (type) {
+    case 'scrollUp':
+      return 'up'
+    case 'scrollDown':
+      return 'down'
+    case 'tap':
+      return 'select'
+    case 'doubleTap':
+      return 'back'
+    case 'exit':
+      return 'back'
+    default:
+      return null
+  }
+}

@@ -17,7 +17,7 @@ import { SURFACE } from '../glasses/types'
 import type { LibraryEntry } from '../library/load'
 
 /** Bump when the render pipeline changes so stale cached bitmaps are ignored. */
-const RENDER_VERSION = 'iter6-2tile-v1'
+const RENDER_VERSION = 'iter7-dim-ink-v1'
 
 // Reading pages are the TOP HALF of the surface (576×144 → 2 image tiles). Each
 // glasses image push is a fixed ~3 s (measured), so halving tiles/page ≈ halves

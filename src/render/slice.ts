@@ -18,6 +18,14 @@
 import { ditherTo4bit, encodePng } from './index'
 import { layoutTile2x2, layoutTile1x2, SURFACE, type ImageSlot } from '../glasses'
 
+// How bright the rendered "ink" is, 0..1 (1 = full-bright white glyphs). The
+// glasses panel was too harsh at full white, so we render the ink a notch dimmer
+// and let the phone-set display brightness govern the absolute level. 0.7 maps
+// the brightest glyph pixels to ~level 11/15 — legible but not glaring. Tune
+// eyes-on-glass; bump RENDER_VERSION (pages.ts) when you change it so the page
+// cache is rebuilt.
+const INK_SCALE = 0.7
+
 export interface Tile {
   slot: ImageSlot
   /** Encoded PNG bytes — feed straight to GlassesAdapter.sendImage(slot.id, …). */
@@ -40,8 +48,9 @@ function makeCanvas(w: number, h: number): HTMLCanvasElement {
 
 /** Dither a full-surface black-on-white page, then tile + build a phone preview. */
 export async function slicePage(blackOnWhite: ImageData): Promise<SlicedPage> {
-  // One dither pass over the whole surface → white-on-black, 16-level grayscale.
-  const dithered = ditherTo4bit(blackOnWhite, true)
+  // One dither pass over the whole surface → white-on-black, 16-level grayscale,
+  // dimmed to INK_SCALE so the panel isn't glaring at full white.
+  const dithered = ditherTo4bit(blackOnWhite, true, INK_SCALE)
 
   const big = makeCanvas(dithered.width, dithered.height)
   const bigCtx = big.getContext('2d')!

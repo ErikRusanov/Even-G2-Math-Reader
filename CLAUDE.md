@@ -192,6 +192,51 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   Menu mode (slots `[]`) still gets the message region as before. `tsc` + `vite build` clean.
   **Eyes-on-glass pending:** confirm the swipe direction (up = next) feels right and the bottom
   «N / total» renders where expected.
+- **2026-06-20 — Iteration 7 (on-glass file selection):** the whole flow is now drivable from the
+  glasses, not just the phone — **library → file → read** without touching the phone. In menu mode
+  the native-text **message** region (already present when there are no image slots) now shows a
+  **windowed library list** with a `> ` marker on the highlighted row, and gestures navigate it:
+  **swipe ↑/↓ moves the highlight, tap reads** the highlighted file — **straight into reading, no
+  File-screen stop** (`select → read(...)`, per the user's "при тапе сразу запускается старт режим").
+  Exiting the reader (double-tap) still lands on the File screen — its `backToFile` onBack is shared
+  with the phone — where glasses **tap = «Читать»** (re-enter) and **double-tap = back to library**.
+  **Autoplay on open:** the reader no longer opens paused — `prompter.ts runReader` calls
+  `engine.play()` right after `engine.start()` (once the first page has landed), so opening a file
+  goes straight into autoscroll with no separate «Старт» tap (`play()` no-ops on a 1-page doc or if
+  disposed mid-load). The reader transport (Iters 4–6) is otherwise unchanged.
+  **On-glass loader:** tapping a bilet runs `paginateDocument` (seconds) while still in menu/text
+  mode, so `mountReader` now mirrors the phone's progress bar to the glasses via `setMessage`
+  («<title>… Загрузка страниц… N/total», status «подготовка страниц…»), updated from the same
+  `onProgress` callback; it's replaced by the first page once `enterReading` switches to the image
+  layout. **Dimmer ink (brightness):** the SDK has **no brightness API** (`even_hub_sdk@0.0.10` =
+  page/image/text/audio/IMU only) — the app cannot set the glasses' brightness, which is governed by
+  the phone. Full-white glyphs read as too harsh, so `ditherTo4bit` gained an `inkScale` (0..1)
+  applied to the post-invert luminance BEFORE quantization (so output still snaps to the 16-level
+  grid → host gray-4 stays near-identity); `slice.ts` passes `INK_SCALE = 0.7` (brightest pixels →
+  ~level 11/15), and `RENDER_VERSION → iter7-dim-ink-v1` rebuilds the page cache. Tune `INK_SCALE`
+  eyes-on-glass (bump RENDER_VERSION on change).
+  **Where the logic lives — the UI owns the on-glass menu now, not `main.ts`:** the old
+  `main.ts` `glassText`/`mirror`/`ScreenInfo` text-mirror was removed; `ui/library.ts mountApp`
+  gained `menuSel` state, a `renderGlasses()` (pushes `glassesLibraryText()` + a status hint via the
+  new `GlassesControl.setMessage`), and a `handleMenuGesture` that self-filters by `screen.kind`
+  (ignores `reader` — the prompter owns those gestures). Selection wraps modulo the list; the window
+  (`WINDOW=5`) keeps the highlight centered so a 20-file library stays navigable on the ~10 native
+  lines; titles truncate to ~22 chars. **One new place for the gesture map:** `teleprompter/gestures.ts`
+  gained `menuGestureToAction` (`MenuAction = up|down|select|back`) beside the reader's
+  `gestureToAction`, so every gesture→intent binding stays in one module (swap the two `scroll*`
+  cases if hardware inverts). **Two plumbing facts that made it work:** (1) `control.onInput` in
+  `main.ts` no longer subscribes the bridge per-caller — it adds handlers to a **fan-out `Set`**, and
+  the bootstrap attaches **one** `glasses.onInput` after connect that dispatches to all of them; this
+  fixes the ordering bug where the UI subscribes **before** the bridge is up (previously `onInput`
+  returned a no-op when `!glassesReady`). Menu + reader handlers now coexist in the set and each
+  self-filters. (2) `mountApp` returns an `AppHandle{ onGlassesReady() }` the bootstrap calls once
+  connected, so the initial library list is painted the moment the bridge is ready (menu `setMessage`
+  is a no-op before then). `GlassesControl` gained `setMessage` (guarded on `!glassesReady || imageMode`
+  so it only writes the message region in menu mode); `enterReading`/`exitReading` no longer touch
+  menu text (the UI re-renders on `onBack`). Phone selection (tap rows / «Читать» button) is
+  untouched — both input paths drive the same `open`/`read`/`back` closures. `tsc` + `vite build`
+  clean. **Eyes-on-glass pending:** confirm swipe ↑ = previous file (vs next) reads right, and that
+  the `> ` marker + Cyrillic titles render legibly in the native list.
 - **Next: Iteration 6** — Polish: dithering/legibility tuning on real lectures, `IndexedDB` strip
   cache (survives WebView reload), reading-position persistence per file, final `src/glasses/`
   cleanup for the current SDK version.
