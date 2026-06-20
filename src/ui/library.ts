@@ -15,6 +15,7 @@
 
 import MarkdownIt from 'markdown-it'
 import { mergeLibrary, type LibraryEntry } from '../library/load'
+import { texToMarkdown } from '../library/tex2md'
 import { loadImported, putImported, deleteImported } from '../library/store'
 import { texToInlineSvg } from '../render'
 import { mountReader, type GlassesControl } from './prompter'
@@ -68,13 +69,27 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
     if (screen.kind === 'library') render()
   })
 
-  // Import `.md` picked from the phone: read text → persist to IndexedDB →
-  // merge into the live list. Skips non-`.md` and unreadable files silently.
+  // Import files picked from the phone: read text → persist to IndexedDB →
+  // merge into the live list. `.tex` is converted to `.md` first and the
+  // converted markdown is what gets saved (the raw `.tex` is not kept). Skips
+  // other extensions and unreadable files silently.
   const importFiles = async (files: FileList) => {
     for (const file of Array.from(files)) {
-      if (!/\.md$/i.test(file.name)) continue
+      const isMd = /\.md$/i.test(file.name)
+      const isTex = /\.tex$/i.test(file.name)
+      if (!isMd && !isTex) continue
       try {
-        const entry = await putImported(file.name, await file.text())
+        const text = await file.text()
+        let name = file.name
+        let raw = text
+        if (isTex) {
+          const stem = file.name.replace(/\.tex$/i, '')
+          const { md, warnings } = texToMarkdown(text, stem)
+          if (warnings.length) console.warn(`[${file.name}] ${warnings.join('; ')}`)
+          name = `${stem}.md`
+          raw = md
+        }
+        const entry = await putImported(name, raw)
         library = mergeLibrary(library, [entry])
       } catch {
         /* skip unreadable file */
@@ -233,10 +248,10 @@ function renderLibrary(
     <h1 class="h1">Library</h1>
     <p class="sub">${library.length} files · tap to open</p>
     <label class="import">
-      + Import .md from phone
-      <input id="import-input" type="file" accept=".md,text/markdown,text/plain" multiple hidden />
+      + Import .md / .tex from phone
+      <input id="import-input" type="file" accept=".md,.tex,text/markdown,text/x-tex,text/plain" multiple hidden />
     </label>
-    <p class="note">Imported files are stored on the phone (offline) and survive restarts.</p>
+    <p class="note">Imported files are stored on the phone (offline) and survive restarts. <code>.tex</code> tickets are auto-converted to markdown on import.</p>
     <div class="list">${items || '<p class="sub">No files. Import some <code>.md</code> above.</p>'}</div>
   `)
 
