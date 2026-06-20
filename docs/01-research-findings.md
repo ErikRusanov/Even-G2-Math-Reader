@@ -62,6 +62,71 @@ The official stack is published under the **`@evenrealities` npm scope**:
   **not** repaint the full surface per frame; push a single image region per step (or only the
   changed tile). This is a binding constraint on Iterations 3–4.
 
+### §image-perf — why image pushes are slow, and what to minimize — `confidence: HIGH`
+
+Researched 2026-06-20 (the Iteration-5 HUD "responds terribly" investigation). The on-glass
+slowness has a clear root cause and a clear lever:
+
+- **Cost = container PIXEL AREA + a fixed per-push round-trip. NOT our PNG/JPEG byte size.** The
+  Even Hub host **re-encodes each container to a fixed-size bitmap (resize + grayscale) before the
+  BLE hop**, so a smaller/cleverer PNG buys nothing — the bytes that actually cross BLE are fixed by
+  the container's dimensions. Smaller container = fewer bytes = faster; clever compression = no
+  change.
+- **Field-measured rates:** a 50×50 image ≈ **4 FPS (~250 ms)**, 30×30 ≈ **9 FPS (~107 ms)** (the
+  fixed round-trip dominates at small sizes); a max-size **576×136 ≈ 3 s** (area dominates at large
+  sizes). Extrapolating, a **288×144 tile ≈ ~1.5 s**, a full 4-tile 576×288 page ≈ **~3 s+**.
+- **Pushes are serial** (SDK enforces queue mode — `updateImageRawData` must await the previous), so
+  **N tiles ≈ N × (area cost) + N × round-trip**, and you visibly see them paint one-by-one.
+- **Two levers, in order:** (1) **repaint fewer tiles** — touch only the one(s) that changed; (2)
+  **repaint a smaller container** where the layout allows it. There is **no slot for a small
+  dedicated overlay** during reading: a full-width page taller than 144 px needs all 4 containers
+  (SDK cap), so transient UI (e.g. the speed HUD) must reuse an existing tile, and the cheapest such
+  update is **a single tile, pushed atomically** (Iteration 5 HUD).
+- Sources: even-realities/EvenDemoApp#36 (~3 s for a max image); zenn.dev/bigdra eveng2-sdk-features
+  (50×50→4 FPS / 30×30→9 FPS, "host handles grayscale", "queue mode, no concurrent send");
+  hub.evenrealities.com docs.
+
+**A second, content-dependent bottleneck — bridge serialization (partially understood; base64
+workaround REFUTED on hardware 2026-06-20):** before the BLE hop, the image payload crosses the
+**WebView↔native bridge**, and *page loads* balloon in a way pure BLE can't explain — observed
+bilet-01 slide 1 ≈ 11 s vs the **denser** slide 2 ≈ 30 s. Area-fixed BLE would be ~constant across
+slides, so the extra cost scales with payload/content. Mechanism (from the `.d.ts`):
+`ImageRawDataUpdate.imageData` is `number[] | string | Uint8Array | ArrayBuffer`, and `toJson`
+**converts a Uint8Array into a `number[]`** (`List<int>`) that is JSON-serialized to the host — a
+~40 KB tile → a **~40 000-element array**, and a heavily-dithered (high-entropy) page → bigger PNG →
+bigger array → slower.
+- **Tried:** pass a **base64 string** instead (the `.d.ts` says *"也允许传 base64 string（由宿主自行处理）"*).
+  ✅ Works in the **simulator**. ❌ **On real G2 firmware the slides silently DON'T render** — you're
+  left looking at the native menu text. The device host does not decode the base64 the way the JS
+  simulator host does. **REVERTED** to the Uint8Array path (the only hardware-safe one).
+- **Implication / still-open:** the byte→`number[]` bridge cost is real but we can't dodge it by
+  changing the payload TYPE. The remaining levers are payload **size/entropy** (lighter dithering or
+  a cleaner image the host quantizes itself) and **pixel count** (smaller pages / fewer tiles) — both
+  change output quality or UX, so they need eyes-on-glass before committing. Whether the 11→30 s is
+  truly the bridge `number[]` build vs. the host's per-tile PNG-decode+gray4 (also content-dependent)
+  is **not yet isolated** — needs on-device timing.
+
+**MEASURED ON-DEVICE (2026-06-20) — root cause settled.** Added a diagnostic that times the
+`Uint8Array→number[]` build (`ser`) separately from the full `updateImageRawData` round-trip
+(`total`), per tile, with the payload size. Real G2, bilet-01, manual paging:
+- `ser` = **0–7 ms** — the bridge serialization is **negligible**. The base64 theory above was a red
+  herring; `number[]` build is not the cost.
+- `net` (= total − ser ≈ host decode + gray4 + BLE) is the **entire** cost, and is **uncorrelated
+  with payload size**: a 6.4 KB tile took 11 s while a 12.4 KB tile took 5.5 s. So smaller/cleaner
+  PNGs would **not** help — payload-size optimization is dead.
+- Per-tile cost is a **fixed ~3 s when fresh** (page 1: 4 tiles ≈ 12.6 s) that **degrades to ~7–13 s
+  under rapid paging** (page totals climbed 12.6 → 33 → 40 s, then settled ~29 s) — i.e. a per-push
+  floor plus congestion/host-memory growth. A 288×144 tile costs about the same ~3 s as the
+  EvenDemoApp's full 576×136, confirming the cost is **per-image-update overhead, not per-pixel/byte**.
+- **Conclusion:** the only effective lever is **fewer image pushes per page**. The minimum to cover
+  576×288 is 4 containers, so a full-surface page is ~12 s floor with no payload escape. **Chosen fix
+  (Iteration 6): 2-tile reading pages** — render the document into 576×144 pages (`layoutTile1x2`,
+  top half), 2 pushes/page ≈ ~2× faster, at the cost of a shorter reading window + more page flips.
+  Diagnostic (`src/glasses/perf.ts` + `prompter` readout) stays in until the 2× is confirmed
+  eyes-on-glass, then gets removed.
+Sources: `@evenrealities/even_hub_sdk@0.0.10` `index.d.ts` (`ImageRawDataUpdate`, `toJson` /
+`normalizeImageData`).
+
 ## 4. BLE protocol — `confidence: HIGH for G1, MEDIUM for G2`
 
 Relevant only if you bypass the official SDK and talk to the glasses directly (not recommended

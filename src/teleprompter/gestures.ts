@@ -8,22 +8,22 @@
 // the binding is trivial to retune after eyes-on-glass.
 //
 // Direction convention — PENDING eyes-on-glass (Iter 5): a swipe toward the TOP
-// of the touchpad/ring (SCROLL_TOP → 'scrollUp') means "read FASTER" (shorter
-// dwell per page); toward the bottom means "slower". This mirrors a teleprompter
-// where pushing the text up speeds it along. If real hardware reports the
-// physical direction inverted, swap the two `scroll*` cases below — that's the
-// only edit needed.
+// of the touchpad/ring (SCROLL_TOP → 'scrollUp') flips to the NEXT page; toward
+// the bottom goes to the PREVIOUS one. This mirrors a teleprompter where pushing
+// the text up reveals what comes next. If real hardware reports the physical
+// direction inverted, swap the two `scroll*` cases below — that's the only edit
+// needed. (Speed is set from the phone slider; swipes are pure navigation now.)
 //
 //   tap        → play / pause
-//   scrollUp   → faster   (−dwell)
-//   scrollDown → slower   (+dwell)
+//   scrollUp   → next page  (autoscroll keeps running; its dwell timer resets)
+//   scrollDown → previous page
 //   doubleTap  → leave the reader (back to the File screen)
 //   exit       → app closed on the glasses → leave the reader
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { InputType } from '../glasses/types'
 
-export type ReaderAction = 'toggle' | 'faster' | 'slower' | 'exit'
+export type ReaderAction = 'toggle' | 'next' | 'prev' | 'exit'
 
 /** Map a normalized glasses gesture to a reader action, or null to ignore it. */
 export function gestureToAction(type: InputType): ReaderAction | null {
@@ -31,9 +31,9 @@ export function gestureToAction(type: InputType): ReaderAction | null {
     case 'tap':
       return 'toggle'
     case 'scrollUp':
-      return 'faster'
+      return 'next'
     case 'scrollDown':
-      return 'slower'
+      return 'prev'
     case 'doubleTap':
       return 'exit'
     case 'exit':

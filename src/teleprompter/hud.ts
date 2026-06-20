@@ -1,22 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────
-// On-glasses speed HUD (Iteration 5) — a speed slider drawn INTO the page.
+// On-glasses speed HUD (Iteration 5) — a floating modal window drawn over ONE
+// bottom tile.
 //
-// Why composite instead of a separate overlay container: in reading mode the
-// surface is fully covered by the 2×2 image tiles (all 4 image containers used),
-// and the native status line sits BEHIND them — so a status-text speed flash is
-// invisible on-glass. The only pixels the glasses actually show are the tiles, so
-// the speed indicator has to be painted onto them.
+// ROOT CAUSE this is shaped around (researched, 2026-06-20): pushing an image to
+// the glasses is slow because of BLE, and the cost scales with the container's
+// PIXEL AREA + a fixed per-push round-trip — NOT with our PNG byte size (the phone
+// host re-encodes each container to a fixed bitmap before the BLE hop, so a clever
+// small PNG buys nothing). Measured rates from the field: a 50×50 image ≈ 4 FPS
+// (~250 ms), 30×30 ≈ 9 FPS (~107 ms), a full 576×136 ≈ 3 s. So a 288×144 tile
+// ≈ 1.5 s and the old HUD — which repainted BOTH bottom tiles serially — took
+// ~3 s and visibly tore (left tile reverted before the right one landed).
 //
-// We draw a slim band across the BOTTOM of the surface (the two bottom tiles,
-// slots id 3 & 4), keeping the math above it intact: decode the page's clean
-// bottom tiles, draw the band + slider + numeric label over their lower strip,
-// re-crop into the two 288×144 tiles, and re-encode. The reader pushes these two
-// tiles on a swipe, then restores the clean bottom tiles after a moment — a
-// transient "volume bar" so you can see the speed change on the glasses.
+// Two levers, both used here: (1) fewer pixels, (2) fewer pushes. We can't add a
+// 5th, smaller image container — the 2×2 page already uses all 4 (SDK cap), and a
+// full-width page taller than 144 px mathematically needs 4 containers, so there's
+// no slot to spare. What we CAN do is touch just ONE of the existing tiles: the
+// modal is drawn into a single bottom tile, pushed atomically (no tear) at half
+// the cost. The caller coalesces bursts so swipes don't queue.
 //
 // Slider geometry mirrors the phone control: left = fast (low sec/page), right =
-// slow. The fill position uses a LOG scale so the knob moves meaningfully across
-// the wide 2…180 s/page range instead of hugging the fast end.
+// slow, on a LOG scale so the knob moves meaningfully across the wide 2…180 range.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { encodePng } from '../render'
@@ -24,39 +27,51 @@ import { SURFACE } from '../glasses/types'
 import { MIN_SEC_PER_PAGE, MAX_SEC_PER_PAGE, formatSpeed } from './speed'
 import type { Tile } from '../render/slice'
 
-const TILE_H = SURFACE.height / 2 // 144 — the bottom tiles start here
-const BAND_H = 60 // height of the HUD band along the bottom
+const TILE_W = SURFACE.width / 2 // 288
+const TILE_H = SURFACE.height / 2 // 144 — one tile is 288×144
 
-/** The page's clean bottom-row tiles (slots covering the lower half). */
-export function bottomTiles(pageTiles: Tile[]): Tile[] {
-  return pageTiles.filter(t => t.slot.y >= TILE_H)
+// The single tile we repaint for the HUD: the lowest, left-most one (bottom-left
+// on a 2×2 page, top-left on a 2-tile reading page). Reusing exactly one tile
+// makes the update atomic — no left/right tear — and is one push, not two.
+export function hudTile(pageTiles: Tile[]): Tile | null {
+  if (pageTiles.length === 0) return null
+  return pageTiles.reduce((best, t) => {
+    if (t.slot.y > best.slot.y) return t
+    if (t.slot.y === best.slot.y && t.slot.x < best.slot.x) return t
+    return best
+  })
 }
 
+/** The clean (page-only) HUD tile, for restoring after the modal times out. */
+export function hudCleanTiles(pageTiles: Tile[]): Tile[] {
+  const t = hudTile(pageTiles)
+  return t ? [t] : []
+}
+
+// Modal window geometry, in the HUD tile's own 288×144 coordinates.
+const MODAL_W = 260
+const MODAL_H = 104
+const MODAL_X = (TILE_W - MODAL_W) / 2 // 14
+const MODAL_Y = (TILE_H - MODAL_H) / 2 // 20
+
 /**
- * Build the two bottom tiles with a speed slider composited over their lower
- * strip. The math in the upper part of those tiles is preserved.
+ * Build the single HUD tile with a speed modal composited over it. The page
+ * content is kept behind the window (it's free — transfer time is fixed by the
+ * tile's pixel area regardless of what's drawn), so only a compact box is added.
  */
 export async function renderSpeedHudTiles(pageTiles: Tile[], speed: number): Promise<Tile[]> {
-  const bottom = bottomTiles(pageTiles)
-  if (bottom.length === 0) return []
+  const tile = hudTile(pageTiles)
+  if (!tile) return []
 
-  // One canvas spanning the full bottom row (576×144); draw clean content first.
-  const canvas = makeCanvas(SURFACE.width, TILE_H)
+  const canvas = makeCanvas(tile.slot.width, tile.slot.height)
   const ctx = canvas.getContext('2d')!
-  for (const tile of bottom) {
-    const img = await decodePng(tile.bytes)
-    ctx.drawImage(img, tile.slot.x, 0)
-  }
+  const img = await decodePng(tile.bytes)
+  ctx.drawImage(img, 0, 0)
 
-  drawSpeedBar(ctx, speed)
+  drawSpeedModal(ctx, speed)
 
-  // Re-crop the row back into per-tile regions and encode.
-  const out: Tile[] = []
-  for (const tile of bottom) {
-    const region = ctx.getImageData(tile.slot.x, 0, tile.slot.width, tile.slot.height)
-    out.push({ slot: tile.slot, bytes: await encodePng(region) })
-  }
-  return out
+  const region = ctx.getImageData(0, 0, tile.slot.width, tile.slot.height)
+  return [{ slot: tile.slot, bytes: await encodePng(region) }]
 }
 
 /** Fraction 0→1 (fast→slow) on a log scale across the speed range. */
@@ -69,27 +84,32 @@ function speedFraction(speed: number): number {
 
 // Pixels map to luminance on the glasses (white = bright green, black = off), so
 // solid grays are all we need — no dithering for these flat shapes.
-function drawSpeedBar(ctx: CanvasRenderingContext2D, speed: number) {
-  const W = SURFACE.width
-  const top = TILE_H - BAND_H // 84
-  const x0 = 60
-  const x1 = W - 60
+function drawSpeedModal(ctx: CanvasRenderingContext2D, speed: number) {
+  const x = MODAL_X
+  const y = MODAL_Y
+  const w = MODAL_W
+  const h = MODAL_H
 
-  // Opaque band + a hairline so its top edge reads against the math above.
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, top, W, BAND_H)
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, top, W, 1)
+  // Window: opaque black panel with a bright 2px border — reads as floating over
+  // the math behind it. (Squared corners; the 4-bit panel doesn't resolve radii.)
+  ctx.fillStyle = '#000000'
+  ctx.fillRect(x, y, w, h)
+  ctx.lineWidth = 2
+  ctx.strokeStyle = '#ffffff'
+  ctx.strokeRect(x + 1, y + 1, w - 2, h - 2)
 
-  // Numeric label, centered.
+  // Title + value, centered near the top of the window.
   ctx.fillStyle = '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'alphabetic'
-  ctx.font = 'bold 19px system-ui, -apple-system, sans-serif'
-  ctx.fillText(`Скорость: ${formatSpeed(speed)}`, W / 2, top + 26)
+  ctx.font = 'bold 18px system-ui, -apple-system, sans-serif'
+  ctx.fillText(`Скорость: ${formatSpeed(speed)}`, x + w / 2, y + 34)
 
-  // Track (dim), filled portion (bright), knob.
-  const trackY = top + 42
+  // Track (dim), filled portion (bright), knob — log-scaled across the range.
+  const m = 24 // inner side margin
+  const x0 = x + m
+  const x1 = x + w - m
+  const trackY = y + 60
   ctx.fillStyle = '#666666'
   ctx.fillRect(x0, trackY - 1, x1 - x0, 3)
   const knobX = x0 + speedFraction(speed) * (x1 - x0)
@@ -99,13 +119,13 @@ function drawSpeedBar(ctx: CanvasRenderingContext2D, speed: number) {
   ctx.arc(knobX, trackY, 6, 0, Math.PI * 2)
   ctx.fill()
 
-  // End labels.
+  // End labels (left = fast, mirroring the phone slider).
   ctx.font = '11px system-ui, -apple-system, sans-serif'
   ctx.fillStyle = '#9a9a9a'
   ctx.textAlign = 'left'
-  ctx.fillText('быстро', x0, top + 56)
+  ctx.fillText('быстро', x0, y + 86)
   ctx.textAlign = 'right'
-  ctx.fillText('медленно', x1, top + 56)
+  ctx.fillText('медленно', x1, y + 86)
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {

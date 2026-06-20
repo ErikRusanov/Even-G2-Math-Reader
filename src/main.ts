@@ -16,7 +16,7 @@
 import { mountApp, type ScreenInfo } from './ui/library'
 import type { GlassesControl } from './ui/prompter'
 import type { Tile } from './render/slice'
-import { GlassesAdapter, layoutTile2x2 } from './glasses'
+import { GlassesAdapter, layoutTile1x2 } from './glasses'
 
 const root = document.querySelector<HTMLDivElement>('#app')
 if (!root) throw new Error('#app mount point missing')
@@ -51,9 +51,10 @@ const control: GlassesControl = {
   },
   async enterReading() {
     if (!glassesReady) return
-    await glasses.setLayout(layoutTile2x2())
+    // 2-tile reading page (top half) — half the pushes. The image layout omits
+    // the native message region, so no stale menu title shows in the blank bottom.
+    await glasses.setLayout(layoutTile1x2())
     imageMode = true
-    await glasses.setMessage(' ').catch(() => {}) // clear any menu text behind the tiles
   },
   async showPage(tiles: Tile[]) {
     if (!glassesReady) return

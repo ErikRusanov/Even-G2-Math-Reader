@@ -19,13 +19,15 @@
 
 import { paginateDocument, type Page, type PagedDoc } from '../teleprompter/pages'
 import { ScrollEngine, type ScrollState } from '../teleprompter/engine'
-import { loadSpeed, saveSpeed, formatSpeed, clampSpeed, stepSpeed } from '../teleprompter/speed'
+import { loadSpeed, saveSpeed, formatSpeed } from '../teleprompter/speed'
 import { gestureToAction } from '../teleprompter/gestures'
-import { renderSpeedHudTiles, bottomTiles } from '../teleprompter/hud'
 import { controlsHtml, bindControls, CONTROLS_STYLE } from './settings'
 import type { LibraryEntry } from '../library/load'
 import type { Tile } from '../render/slice'
 import type { InputEvent } from '../glasses/types'
+// DIAGNOSTIC (Iter-6 timing spike): per-tile push perf bus. Not an SDK call —
+// a neutral event stream — so importing it in the UI doesn't break the adapter rule.
+import { onPush, type PushSample } from '../glasses/perf'
 
 /**
  * What the reader needs from the glasses, abstracted from the SDK adapter so the
@@ -107,13 +109,23 @@ async function runReader(
   // Live unsubscribe for the glasses gesture stream (set once subscribed).
   let unsubscribe: () => void = () => {}
 
+  // DIAGNOSTIC: live per-tile push timings on the phone (see glasses/perf).
+  const perfSamples: PushSample[] = []
+  const unsubPerf = onPush(s => {
+    perfSamples.push(s)
+    if (perfSamples.length > 8) perfSamples.shift()
+    renderPerf(els.perf, perfSamples)
+  })
+
   // Paint a page on the phone (preview) and on the glasses (tiles). Awaited by the
   // engine, so the next dwell starts only once the slow tile push has landed.
   const showPage = async (index: number) => {
     const page: Page = doc.pages[index]
     els.image.src = page.preview
     els.counter.textContent = `${index + 1} / ${total}`
-    await glasses.setStatus(`${doc.title} · ${index + 1}/${total}`).catch(() => {})
+    // Page indicator on the glasses' bottom status line (the title is shown on the
+    // phone; here we keep it to a clean "N / total" so it reads at a glance).
+    await glasses.setStatus(`${index + 1} / ${total}`).catch(() => {})
     await glasses.showPage(page.tiles).catch(() => {})
   }
 
@@ -148,53 +160,6 @@ async function runReader(
   // while reading, so it only really shows in transitions — keep it for play/pause.
   const flashStatus = (text: string) => void glasses.setStatus(text).catch(() => {})
 
-  // ── On-glasses speed HUD ──────────────────────────────────────────────────
-  // A swipe changes speed; the status line is hidden behind the tiles, so paint a
-  // transient slider into the bottom two tiles (like a TV volume bar) and restore
-  // the clean tiles after a beat. Restores are guarded on the page index so a page
-  // flip (which repaints all 4 tiles) is never clobbered by a stale restore.
-  const HUD_VISIBLE_MS = 2200
-  let hudTimer: ReturnType<typeof setTimeout> | null = null
-  const clearHudTimer = () => {
-    if (hudTimer != null) {
-      clearTimeout(hudTimer)
-      hudTimer = null
-    }
-  }
-  const showSpeedHud = (speed: number) => {
-    if (!glasses.available) return
-    const idx = engine.getIndex()
-    const page = doc.pages[idx]
-    clearHudTimer()
-    void (async () => {
-      let tiles: Tile[]
-      try {
-        tiles = await renderSpeedHudTiles(page.tiles, speed)
-      } catch {
-        return
-      }
-      if (isDisposed() || engine.getIndex() !== idx) return // page moved — drop it
-      await glasses.showPage(tiles).catch(() => {})
-      if (isDisposed()) return
-      hudTimer = setTimeout(() => {
-        hudTimer = null
-        if (isDisposed() || engine.getIndex() !== idx) return // a flip already cleaned up
-        void glasses.showPage(bottomTiles(page.tiles)).catch(() => {})
-      }, HUD_VISIBLE_MS)
-    })()
-  }
-
-  // Apply a speed coming from the glasses (swipe): move the engine, the phone
-  // slider, persistence, and the on-glass HUD together (the phone slider's own
-  // handler only touches engine + storage, since it IS the source).
-  const applySpeed = (sec: number) => {
-    const clamped = clampSpeed(sec)
-    engine.setSpeed(clamped)
-    controls.setSpeed(clamped)
-    saveSpeed(entry.id, clamped)
-    showSpeedHud(clamped)
-  }
-
   // Single exit path (back button, double-tap, or app closed on the glasses):
   // unsubscribe, stop the engine, restore the menu layout, return to the File screen.
   let exited = false
@@ -203,28 +168,30 @@ async function runReader(
     exited = true
     markDisposed()
     unsubscribe()
-    clearHudTimer()
+    unsubPerf()
     engine.dispose()
     await glasses.exitReading().catch(() => {})
     hooks.onBack()
   }
 
   // Iteration 5 — drive the reader from glasses gestures. Mapping lives in
-  // teleprompter/gestures; here we only execute the resulting action.
+  // teleprompter/gestures; here we only execute the resulting action. Swipes now
+  // PAGE (next/prev): a manual flip keeps the current play state and, if playing,
+  // resets the dwell countdown (engine.goTo restarts it) — so autoscroll never
+  // stops, it just re-times from the page you jumped to. Speed is the phone slider.
   const handleGesture = (event: InputEvent) => {
     const action = gestureToAction(event.type)
     if (!action) return
-    const speed = last?.secPerPage ?? initialSpeed
     switch (action) {
       case 'toggle':
         engine.toggle() // onState fires synchronously → `last` is fresh below
         flashStatus(last?.playing ? `чтение · ${posLabel(last)}` : `пауза · ${posLabel(last)}`)
         break
-      case 'faster':
-        applySpeed(stepSpeed(speed, 'faster'))
+      case 'next':
+        void engine.next()
         break
-      case 'slower':
-        applySpeed(stepSpeed(speed, 'slower'))
+      case 'prev':
+        void engine.prev()
         break
       case 'exit':
         void exitReader()
@@ -253,6 +220,7 @@ interface Refs {
   sub: HTMLElement
   dwell: HTMLElement
   back: HTMLElement
+  perf: HTMLElement
 }
 
 function grabRefs(root: HTMLElement): Refs {
@@ -262,7 +230,31 @@ function grabRefs(root: HTMLElement): Refs {
     sub: root.querySelector<HTMLElement>('#sub')!,
     dwell: root.querySelector<HTMLElement>('#dwell')!,
     back: root.querySelector<HTMLElement>('#back')!,
+    perf: root.querySelector<HTMLElement>('#perf')!,
   }
+}
+
+/**
+ * DIAGNOSTIC readout: recent per-tile push timings + a "last 4 tiles ≈ one page"
+ * roll-up. `ser` = the Uint8Array→number[] bridge serialization; `net` ≈ host
+ * decode + gray4 + BLE. Whichever dominates tells us which lever to pull.
+ */
+function renderPerf(el: HTMLElement, samples: PushSample[]): void {
+  if (samples.length === 0) return
+  const line = (s: PushSample) => {
+    const net = Math.max(0, s.totalMs - s.serMs)
+    return `slot${s.slot}  ${(s.bytes / 1024).toFixed(1)}KB   ser ${s.serMs.toFixed(0)}  net ${net.toFixed(
+      0,
+    )}  Σ ${s.totalMs.toFixed(0)}ms`
+  }
+  const page = samples.slice(-2) // a reading page is now 2 tiles (576×144)
+  const ser = page.reduce((a, s) => a + s.serMs, 0)
+  const total = page.reduce((a, s) => a + s.totalMs, 0)
+  const net = Math.max(0, total - ser)
+  const roll = `≈ страница (2 тайла):  ser ${ser.toFixed(0)}  ·  net ${net.toFixed(0)}  ·  total ${total.toFixed(
+    0,
+  )}ms`
+  el.textContent = `perf (diag)\n${samples.map(line).join('\n')}\n${roll}`
 }
 
 /** Short "n/total" position for the on-glasses status flashes. */
@@ -287,10 +279,13 @@ function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
       <div class="dwell-track"><div class="dwell-fill" id="dwell"></div></div>
     </div>
     <div class="meta"><span class="pos" id="counter">1 / ${doc.pages.length}</span></div>
+    <pre class="perf" id="perf"></pre>
     ${controlsHtml(initialSpeed)}
     <p class="note">То, что вы видите здесь — реальный 4-bit растр, уходящий на очки
-      (576×288, 4 тайла). Автоскролл выдерживает паузу на каждой странице после её
-      полной отправки на очки, поэтому медленный BLE-пуш не съедает время чтения.</p>
+      (верхняя половина 576×144, 2 тайла). Автоскролл выдерживает паузу на каждой
+      странице после её полной отправки на очки, поэтому медленный BLE-пуш не
+      съедает время чтения. На очках: свайп вверх — следующая страница, вниз —
+      предыдущая, тап — пауза/старт.</p>
   `)
 }
 
@@ -341,6 +336,8 @@ const STYLE = `<style>
   .dwell-fill { height:100%; width:0; background:#5fbf5f; }
   .meta { display:flex; justify-content:flex-end; margin:8px 0 0; }
   .pos { color:#8a8a8a; font-size:13px; }
+  .perf { margin:8px 0 0; padding:8px 10px; background:#0d130d; border:1px solid #244016; border-radius:6px;
+          color:#8fd08f; font:11px/1.45 ui-monospace,Menlo,monospace; white-space:pre; overflow-x:auto; }
   .note { color:#7a7a7a; font-size:11.5px; margin:16px 0 0; line-height:1.4; }
   .err { color:#e29b9b; font:13px ui-monospace,monospace; margin:10px 0; }
 ${CONTROLS_STYLE}

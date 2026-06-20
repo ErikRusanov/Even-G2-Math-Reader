@@ -45,8 +45,10 @@ import {
   type InputSource,
   type SendResult,
 } from './types'
+import { recordPush } from './perf'
 
 export * from './types'
+export { onPush, type PushSample } from './perf'
 
 // Reserved container ids for the adapter's own chrome. Caller image-slot ids
 // must not collide with these.
@@ -164,7 +166,13 @@ export class GlassesAdapter {
     })
 
     // Main native-text region (everything above the status line). Holds menu /
-    // file-title / hint prose; cleared by callers that paint images over it.
+    // file-title / hint prose. ONLY present in menu mode (no image slots): in
+    // reading mode the image tiles carry the screen, and because a 2-tile page
+    // covers just the top half, a leftover message region would show stale menu
+    // text (the file title) in the blank area below. Whitespace content doesn't
+    // reliably clear on real G2, so we drop the container entirely on rebuild —
+    // that removes the text structurally rather than trying to blank it.
+    const includeMessage = clamped.length === 0
     const message = new TextContainerProperty({
       xPosition: 0,
       yPosition: 0,
@@ -192,9 +200,10 @@ export class GlassesAdapter {
     )
 
     // Order matters: message (back) → eventLayer (capture, blank) → status.
+    const textObject = includeMessage ? [message, eventLayer, status] : [eventLayer, status]
     return {
-      containerTotalNum: imageObject.length + 3,
-      textObject: [message, eventLayer, status],
+      containerTotalNum: imageObject.length + textObject.length,
+      textObject,
       imageObject,
     }
   }
@@ -216,20 +225,42 @@ export class GlassesAdapter {
     }
   }
 
-  /** Push encoded image bytes (PNG/JPEG) to one slot. Serialized internally. */
+  /**
+   * Push encoded image bytes (PNG/JPEG) to one slot. Serialized internally.
+   *
+   * NB: we pass the Uint8Array (which the SDK converts to a `number[]` for the
+   * host). Passing a base64 string instead works on the simulator but the **real
+   * G2 firmware does NOT decode it** — slides silently fail to render — so the
+   * byte path is the only hardware-safe one. (See docs/01 §image-perf.)
+   */
   sendImage(slotId: number, bytes: Uint8Array): Promise<SendResult> {
     const bridge = this.requireBridge()
     if (!this.slots.has(slotId)) {
       return Promise.reject(new Error(`Unknown image slot: ${slotId}`))
     }
     const run = this.queue.then(async () => {
-      const result = await bridge.updateImageRawData(
-        new ImageRawDataUpdate({
-          containerID: slotId,
-          containerName: imageName(slotId),
-          imageData: bytes,
-        }),
-      )
+      const msg = new ImageRawDataUpdate({
+        containerID: slotId,
+        containerName: imageName(slotId),
+        imageData: bytes,
+      })
+      // DIAGNOSTIC: time the Uint8Array → number[] JSON build (what the SDK does
+      // internally to cross the bridge) separately from the full round-trip, so we
+      // can see if the bridge serialization or the host+BLE is the bottleneck.
+      // NB: this builds the payload an extra time, so the measured run is slower
+      // than production — read serMs vs (totalMs−serMs), not the absolute total.
+      const serT0 = performance.now()
+      try {
+        ImageRawDataUpdate.toJson(msg)
+      } catch {
+        /* measurement only */
+      }
+      const serMs = performance.now() - serT0
+
+      const t0 = performance.now()
+      const result = await bridge.updateImageRawData(msg)
+      const totalMs = performance.now() - t0
+      recordPush({ slot: slotId, bytes: bytes.length, serMs, totalMs })
       return result as unknown as SendResult
     })
     // Keep the chain alive even if one push rejects.
@@ -275,6 +306,24 @@ export function layoutSingle(width: number, height: number, id = 1): ImageSlot[]
   const w = Math.min(width, IMAGE_LIMITS.maxW)
   const h = Math.min(height, IMAGE_LIMITS.maxH)
   return [{ id, x: Math.round((SURFACE.width - w) / 2), y: Math.round((SURFACE.height - h) / 2), width: w, height: h }]
+}
+
+/**
+ * Two 288×144 slots tiling the TOP HALF of the surface (576×144), left + right.
+ *
+ * This is the Iteration-6 reading layout. On-device timing proved each image
+ * push is a FIXED ~3 s (host + BLE) regardless of payload size, so the only real
+ * speedup is FEWER pushes: a 2-tile page = 2 pushes ≈ 6 s vs the 2×2 page's 4
+ * pushes ≈ 12 s (and worse under congestion). The reading window is the top half
+ * of the glasses; the bottom half stays blank.
+ */
+export function layoutTile1x2(): ImageSlot[] {
+  const w = SURFACE.width / 2 // 288
+  const h = SURFACE.height / 2 // 144
+  return [
+    { id: 1, x: 0, y: 0, width: w, height: h },
+    { id: 2, x: w, y: 0, width: w, height: h },
+  ]
 }
 
 /**

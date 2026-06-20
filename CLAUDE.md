@@ -114,18 +114,84 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   **on-glass speed HUD** together (the slider's own handler only touches engine+storage since it IS
   the source). **On-glass speed HUD (`src/teleprompter/hud.ts`):** in reading mode the surface is
   fully covered by the 2×2 image tiles (all 4 image containers used) and the native status line sits
-  *behind* them — a status-text speed flash is **invisible on-glass**. So the HUD paints the speed
-  indicator INTO the bottom two tiles: decode the page's clean bottom tiles → draw a slim band +
-  slider (log-scaled knob, `formatSpeed` label, «быстро/медленно» ends) over their lower strip →
-  re-crop + re-encode → push the 2 tiles. Transient (TV-volume-bar): after ~2.2 s the clean bottom
-  tiles are restored, **guarded on the page index** so an autoscroll flip (which repaints all 4
-  tiles) is never clobbered by a stale restore. Fired only by glasses swipes (the phone slider drags
-  too fast to push per-tick). Back-button, double-tap, and app-closed-on-glasses now all funnel
+  *behind* them — a status-text speed flash is **invisible on-glass**, and there is **no spare image
+  container** for a true floating overlay (4/4 used) nor sub-tile repaint (containers repaint
+  whole-tile). So the HUD draws a **modal window composited onto the page**, **not** a full-surface
+  repaint. **ROOT CAUSE of the on-glass slowness (researched 2026-06-20, see `docs/01` §image-perf):**
+  a BLE image push is slow in proportion to the container's **pixel area + a fixed per-push
+  round-trip**, and is **independent of our PNG byte size** (the Even Hub host re-encodes each
+  container to a fixed bitmap before the BLE hop). Field rates: 50×50 ≈ 4 FPS, 30×30 ≈ 9 FPS, full
+  576×136 ≈ 3 s → a 288×144 tile ≈ ~1.5 s. The first HUD cut repainted **both** bottom tiles serially
+  (~3 s) and visibly **tore** — left tile reverted before the right one landed. Fix follows straight
+  from the cause: repaint a **single** bottom tile (the bottom-left), so the update is **atomic (no
+  tear)** and ~half the cost. `hudTile()` picks it; `renderSpeedHudTiles` decodes that one clean tile,
+  draws a centered bordered modal (log-scaled slider, `formatSpeed` label, «быстро/медленно» ends)
+  over the kept page math, re-encodes, returns **one** tile. Transient (TV-volume-bar): ~2.2 s after
+  the last swipe the clean tile is restored from its **cached bytes** (`hudCleanTiles`, no re-encode),
+  **guarded on the page index** so an autoscroll flip (repaints all 4 tiles) is never clobbered by a
+  stale restore. **Coalesced**: while the push is in flight, more swipes only update the latest target
+  speed — exactly one more push lands for that value when the BLE queue frees, so N fast swipes cost
+  ~1–2 pushes, not 2N. Fired only by glasses swipes (the phone slider drags too fast to push
+  per-tick). Back-button, double-tap, and app-closed-on-glasses now all funnel
   through a single idempotent `exitReader` (unsubscribe → dispose → restore menu layout → back to
   File). `tsc` +
   `vite build` clean. **Eyes-on-glass pending:** the **swipe direction → faster/slower** convention
   (swipe-up = faster) is a documented assumption isolated to one `switch` in `gestures.ts` — flip the
   two `scroll*` cases if hardware shows it inverted; also confirm the R1 ring actually emits these.
+- **2026-06-20 — Perf investigation (image push), base64 workaround REVERTED:** page loads are
+  brutal and **content-dependent** (bilet-01 slide 1 ≈ 11 s, the *denser* slide 2 ≈ 30 s — area-fixed
+  BLE can't explain that). Suspected mechanism: `ImageRawDataUpdate` converts a `Uint8Array` payload
+  into a `number[]` and JSON-serializes it across the WebView↔host bridge, so a ~40 KB dithered tile
+  becomes a ~40 000-element array and high-entropy pages blow up biggest. **Tried** handing the SDK a
+  **base64 string** instead (the `.d.ts` says the host accepts it): ✅ fine in the **simulator**, ❌
+  **broke on real glasses — slides stopped rendering entirely** (stuck on the native menu text). The
+  device firmware doesn't decode the base64 like the sim's JS host does. **Reverted** to the
+  Uint8Array byte path (`Tile.bytes`, `sendImage(id, bytes)`) — the only hardware-safe one. Net: no
+  speedup landed; the real lever is payload **size/entropy** (lighter dithering / cleaner image) or
+  **fewer pixels** (smaller pages), both of which need eyes-on-glass. Details + open question (bridge
+  array vs host PNG-decode) in `docs/01` §image-perf. `tsc` + `vite build` clean. **Decision: measure
+  first.** Added a **DIAGNOSTIC timing spike** (`src/glasses/perf.ts` + instrumentation in
+  `GlassesAdapter.sendImage`, live readout in `prompter.ts`): per tile it reports payload **KB**,
+  **ser** (Uint8Array→number[] JSON build, timed by an explicit extra `ImageRawDataUpdate.toJson`) and
+  **total** round-trip → `net ≈ total − ser` ≈ host+BLE, with a "last-4-tiles ≈ page" roll-up shown on
+  the phone. If **ser** dominates → reduce payload BYTES; if **net** dominates → reduce PIXELS. NB the
+  extra toJson makes the measured run slower than production — read the ser/net SPLIT, not the
+  absolute. **Remove this spike once the lever is chosen.**
+- **2026-06-20 — Measured + Iteration 6a (2-tile pages):** the spike settled it (numbers in `docs/01`
+  §image-perf): **`ser` ≈ 0–7 ms** (bridge serialization is a non-issue — base64 was a red herring),
+  **`net` is the whole cost and is uncorrelated with payload KB** (a 6.4 KB tile took 11 s, a 12.4 KB
+  tile 5.5 s → smaller/cleaner PNGs won't help), and the per-tile cost is a **fixed ~3 s fresh**
+  (≈12.6 s/page) that **degrades to ~7–13 s under rapid paging**. Since a 288×144 tile ≈ a full image
+  in cost, it's **per-push overhead, not per-pixel** → the only lever is **fewer pushes**. Implemented
+  **2-tile reading pages**: render the doc into **576×144** pages (top half) instead of 576×288, so a
+  page = **2** image pushes (~6 s) not 4 (~12 s). `glasses/layoutTile1x2()` (top-row 2 slots),
+  `slice.ts` infers 1×2 vs 2×2 by page height + pads the phone preview to full surface (content top,
+  blank bottom = true on-glass look), `pages.ts` renders at `pageH=144, pad=10` and bumps
+  `RENDER_VERSION → iter6-2tile-v1`, `main.ts enterReading` uses `layoutTile1x2`, `hud.hudTile` now
+  picks lowest/left-most tile (was bottom-row-only). Tradeoff: shorter window (~3–4 lines/page) + ~2×
+  more flips, each ~2× faster. Perf spike kept until the 2× is confirmed eyes-on-glass, then removed.
+  `tsc` + `vite build` clean.
+- **2026-06-20 — Iteration 6b (gesture remap + bottom page indicator + stale-title fix):** three
+  on-glass UX fixes driven by eyes-on-glass with the 2-tile layout. **(1) Swipes now PAGE, not
+  speed:** `gestures.ts` maps `scrollUp → 'next'`, `scrollDown → 'prev'` (was faster/slower);
+  speed is now phone-slider-only. A manual flip routes through `engine.next()/prev()` → `goTo`,
+  which keeps the current play state and **restarts the dwell** if playing — so autoscroll never
+  stops, it just re-times from the page you jumped to (the user's "таймер обнуляется, но не
+  перестаёт работать"). This retired the entire on-glass **speed HUD** wiring in `prompter.ts`
+  (`showSpeedHud`/`restoreHud`/coalescing/`applySpeed` + the `hud`/`stepSpeed`/`clampSpeed` imports);
+  `src/teleprompter/hud.ts` is now orphaned (kept on disk, tree-shaken out — restore if glass-side
+  speed control ever returns). **(2) Page indicator on glass:** `showPage` sets the bottom status
+  line to a clean **`N / total`** (dropped the title prefix) — visible because the 2-tile page only
+  covers the top half, so the status line (y 260–288) sits in the blank bottom band. **(3) Stale
+  menu title fix:** on real G2 the native **message** region kept showing the File-screen title
+  (e.g. «Билет 1…») in that blank bottom band — the phone preview is pure image so it never showed
+  it, and `setMessage(' ')` doesn't reliably clear (whitespace is treated as no-op). Fixed
+  **structurally** in `glasses/buildContainers`: the message text container is now **omitted entirely
+  whenever image slots are present** (`includeMessage = clamped.length === 0`), so reading mode has
+  no region to hold stale text; `main.ts enterReading` dropped its now-pointless `setMessage(' ')`.
+  Menu mode (slots `[]`) still gets the message region as before. `tsc` + `vite build` clean.
+  **Eyes-on-glass pending:** confirm the swipe direction (up = next) feels right and the bottom
+  «N / total» renders where expected.
 - **Next: Iteration 6** — Polish: dithering/legibility tuning on real lectures, `IndexedDB` strip
   cache (survives WebView reload), reading-position persistence per file, final `src/glasses/`
   cleanup for the current SDK version.

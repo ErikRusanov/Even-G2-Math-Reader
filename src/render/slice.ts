@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import { ditherTo4bit, encodePng } from './index'
-import { layoutTile2x2, type ImageSlot } from '../glasses'
+import { layoutTile2x2, layoutTile1x2, SURFACE, type ImageSlot } from '../glasses'
 
 export interface Tile {
   slot: ImageSlot
@@ -47,7 +47,10 @@ export async function slicePage(blackOnWhite: ImageData): Promise<SlicedPage> {
   const bigCtx = big.getContext('2d')!
   bigCtx.putImageData(dithered, 0, 0)
 
-  const slots = layoutTile2x2()
+  // A half-height page (≤144) is the 2-tile reading layout (top row); a
+  // full-surface page is the 2×2. Slots are surface-positioned at y=0 for the top
+  // row, so they index straight into the page bitmap.
+  const slots = dithered.height <= SURFACE.height / 2 ? layoutTile1x2() : layoutTile2x2()
   const tiles: Tile[] = []
   for (const slot of slots) {
     const region = bigCtx.getImageData(slot.x, slot.y, slot.width, slot.height)
@@ -58,7 +61,12 @@ export async function slicePage(blackOnWhite: ImageData): Promise<SlicedPage> {
   return { tiles, preview: greenPreview(dithered) }
 }
 
-/** White-on-black grayscale → bright-green-on-dark PNG data URL (phone mirror). */
+/**
+ * White-on-black grayscale → bright-green-on-dark PNG data URL (phone mirror).
+ * Always sized to the full 576×288 surface with the page placed at the TOP, so
+ * the phone shows the true on-glass layout — for a half-height (2-tile) page the
+ * bottom half is blank, exactly as on the glasses.
+ */
 function greenPreview(dithered: ImageData): string {
   const { width, height, data } = dithered
   const out = new ImageData(width, height)
@@ -70,7 +78,13 @@ function greenPreview(dithered: ImageData): string {
     od[p + 2] = Math.round(lum * 0.35)
     od[p + 3] = 255
   }
-  const c = makeCanvas(width, height)
-  c.getContext('2d')!.putImageData(out, 0, 0)
+  const tmp = makeCanvas(width, height)
+  tmp.getContext('2d')!.putImageData(out, 0, 0)
+
+  const c = makeCanvas(SURFACE.width, SURFACE.height)
+  const cx = c.getContext('2d')!
+  cx.fillStyle = '#000000'
+  cx.fillRect(0, 0, SURFACE.width, SURFACE.height)
+  cx.drawImage(tmp, 0, 0) // page at top; remainder stays black
   return c.toDataURL('image/png')
 }

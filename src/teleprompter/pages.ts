@@ -13,10 +13,18 @@
 import { renderDocumentPages } from '../render/document'
 import { slicePage, type Tile } from '../render/slice'
 import { memoize, hashContent } from '../cache'
+import { SURFACE } from '../glasses/types'
 import type { LibraryEntry } from '../library/load'
 
 /** Bump when the render pipeline changes so stale cached bitmaps are ignored. */
-const RENDER_VERSION = 'iter3-v1'
+const RENDER_VERSION = 'iter6-2tile-v1'
+
+// Reading pages are the TOP HALF of the surface (576×144 → 2 image tiles). Each
+// glasses image push is a fixed ~3 s (measured), so halving tiles/page ≈ halves
+// load time; the cost is a shorter window (more, faster page flips). Slightly
+// tighter padding reclaims a little of the lost vertical room.
+const READING_PAGE_H = SURFACE.height / 2 // 144
+const READING_PAD = 10
 
 export interface Page {
   /** Four 288×144 tiles to push to the glasses for this page. */
@@ -38,7 +46,7 @@ export function paginateDocument(
 ): Promise<PagedDoc> {
   const key = `${RENDER_VERSION}:${entry.id}:${hashContent(entry.body)}`
   return memoize(key, async () => {
-    const bitmaps = await renderDocumentPages(entry.body)
+    const bitmaps = await renderDocumentPages(entry.body, { pageH: READING_PAGE_H, pad: READING_PAD })
     const pages: Page[] = []
     onProgress?.(0, bitmaps.length)
     for (let i = 0; i < bitmaps.length; i++) {
