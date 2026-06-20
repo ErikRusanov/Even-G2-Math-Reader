@@ -45,10 +45,8 @@ import {
   type InputSource,
   type SendResult,
 } from './types'
-import { recordPush } from './perf'
 
 export * from './types'
-export { onPush, type PushSample } from './perf'
 
 // Reserved container ids for the adapter's own chrome. Caller image-slot ids
 // must not collide with these.
@@ -244,23 +242,7 @@ export class GlassesAdapter {
         containerName: imageName(slotId),
         imageData: bytes,
       })
-      // DIAGNOSTIC: time the Uint8Array → number[] JSON build (what the SDK does
-      // internally to cross the bridge) separately from the full round-trip, so we
-      // can see if the bridge serialization or the host+BLE is the bottleneck.
-      // NB: this builds the payload an extra time, so the measured run is slower
-      // than production — read serMs vs (totalMs−serMs), not the absolute total.
-      const serT0 = performance.now()
-      try {
-        ImageRawDataUpdate.toJson(msg)
-      } catch {
-        /* measurement only */
-      }
-      const serMs = performance.now() - serT0
-
-      const t0 = performance.now()
       const result = await bridge.updateImageRawData(msg)
-      const totalMs = performance.now() - t0
-      recordPush({ slot: slotId, bytes: bytes.length, serMs, totalMs })
       return result as unknown as SendResult
     })
     // Keep the chain alive even if one push rejects.

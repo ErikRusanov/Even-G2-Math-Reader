@@ -25,9 +25,6 @@ import { controlsHtml, bindControls, CONTROLS_STYLE } from './settings'
 import type { LibraryEntry } from '../library/load'
 import type { Tile } from '../render/slice'
 import type { InputEvent } from '../glasses/types'
-// DIAGNOSTIC (Iter-6 timing spike): per-tile push perf bus. Not an SDK call —
-// a neutral event stream — so importing it in the UI doesn't break the adapter rule.
-import { onPush, type PushSample } from '../glasses/perf'
 
 /**
  * What the reader needs from the glasses, abstracted from the SDK adapter so the
@@ -118,23 +115,35 @@ async function runReader(
   // Live unsubscribe for the glasses gesture stream (set once subscribed).
   let unsubscribe: () => void = () => {}
 
-  // DIAGNOSTIC: live per-tile push timings on the phone (see glasses/perf).
-  const perfSamples: PushSample[] = []
-  const unsubPerf = onPush(s => {
-    perfSamples.push(s)
-    if (perfSamples.length > 8) perfSamples.shift()
-    renderPerf(els.perf, perfSamples)
-  })
+  // The glasses' bottom status line shows "N / total" on the left and a live
+  // countdown to the next flip on the right. We only push it over BLE when the
+  // visible text actually changes (the countdown integer or the page), so the
+  // per-frame onProgress can drive it without flooding the native-text channel.
+  let lastStatus = ''
+  const pushStatus = (text: string) => {
+    if (text === lastStatus) return
+    lastStatus = text
+    void glasses.setStatus(text).catch(() => {})
+  }
+
+  // Refresh the countdown (phone label + glasses status line) from the current
+  // dwell fraction. Active only while autoscrolling and not mid-push; otherwise
+  // it clears to just the page indicator.
+  const updateCountdown = (fraction: number) => {
+    const s = last
+    const active = !!s && s.playing && !s.busy && !s.atEnd
+    const remaining = active ? Math.max(0, Math.ceil(s!.secPerPage * (1 - fraction))) : null
+    els.countdown.textContent = remaining == null ? '' : `до перелистывания: ${formatCountdown(remaining)}`
+    pushStatus(glassStatusLine(s ? s.index : engine.getIndex(), total, remaining))
+  }
 
   // Paint a page on the phone (preview) and on the glasses (tiles). Awaited by the
-  // engine, so the next dwell starts only once the slow tile push has landed.
+  // engine, so the next dwell starts only once the slow tile push has landed. The
+  // status line (page indicator + countdown) is driven by onState/onProgress.
   const showPage = async (index: number) => {
     const page: Page = doc.pages[index]
     els.image.src = page.preview
     els.counter.textContent = `${index + 1} / ${total}`
-    // Page indicator on the glasses' bottom status line (the title is shown on the
-    // phone; here we keep it to a clean "N / total" so it reads at a glance).
-    await glasses.setStatus(`${index + 1} / ${total}`).catch(() => {})
     await glasses.showPage(page.tiles).catch(() => {})
   }
 
@@ -148,9 +157,13 @@ async function runReader(
       controls.setNav(s.index > 0 && !s.busy, !s.atEnd && !s.busy)
       controls.setBusy(s.busy)
       els.sub.textContent = pageSub(s)
+      // When not actively counting down (paused / pushing / at end), refresh the
+      // status line to just the page indicator and clear the phone countdown.
+      if (!s.playing || s.busy || s.atEnd) updateCountdown(1)
     },
     onProgress: fraction => {
       els.dwell.style.width = `${Math.round(fraction * 100)}%`
+      updateCountdown(fraction)
     },
   })
 
@@ -165,9 +178,10 @@ async function runReader(
   })
   controls.setSpeed(initialSpeed)
 
-  // Brief on-glasses feedback (native text line). Hidden behind the image tiles
-  // while reading, so it only really shows in transitions — keep it for play/pause.
-  const flashStatus = (text: string) => void glasses.setStatus(text).catch(() => {})
+  // Brief on-glasses feedback (native text line) on play/pause. Routed through
+  // pushStatus so it keeps `lastStatus` in sync — otherwise the next countdown
+  // tick (same page text) could be deduped away and the flash would stick.
+  const flashStatus = (text: string) => pushStatus(text)
 
   // Single exit path (back button, double-tap, or app closed on the glasses):
   // unsubscribe, stop the engine, restore the menu layout, return to the File screen.
@@ -177,7 +191,6 @@ async function runReader(
     exited = true
     markDisposed()
     unsubscribe()
-    unsubPerf()
     engine.dispose()
     await glasses.exitReading().catch(() => {})
     hooks.onBack()
@@ -229,44 +242,44 @@ async function runReader(
 interface Refs {
   image: HTMLImageElement
   counter: HTMLElement
+  countdown: HTMLElement
   sub: HTMLElement
   dwell: HTMLElement
   back: HTMLElement
-  perf: HTMLElement
 }
 
 function grabRefs(root: HTMLElement): Refs {
   return {
     image: root.querySelector<HTMLImageElement>('#page')!,
     counter: root.querySelector<HTMLElement>('#counter')!,
+    countdown: root.querySelector<HTMLElement>('#countdown')!,
     sub: root.querySelector<HTMLElement>('#sub')!,
     dwell: root.querySelector<HTMLElement>('#dwell')!,
     back: root.querySelector<HTMLElement>('#back')!,
-    perf: root.querySelector<HTMLElement>('#perf')!,
   }
 }
 
 /**
- * DIAGNOSTIC readout: recent per-tile push timings + a "last 4 tiles ≈ one page"
- * roll-up. `ser` = the Uint8Array→number[] bridge serialization; `net` ≈ host
- * decode + gray4 + BLE. Whichever dominates tells us which lever to pull.
+ * The glasses' bottom status line: page indicator on the left, countdown to the
+ * next flip on the right. The native status region is ~25 chars wide and behind
+ * the 2-tile page (which covers only the top half), so this reads in the blank
+ * bottom band. `remainingSec == null` (paused / pushing) drops the countdown.
  */
-function renderPerf(el: HTMLElement, samples: PushSample[]): void {
-  if (samples.length === 0) return
-  const line = (s: PushSample) => {
-    const net = Math.max(0, s.totalMs - s.serMs)
-    return `slot${s.slot}  ${(s.bytes / 1024).toFixed(1)}KB   ser ${s.serMs.toFixed(0)}  net ${net.toFixed(
-      0,
-    )}  Σ ${s.totalMs.toFixed(0)}ms`
+function glassStatusLine(index: number, total: number, remainingSec: number | null): string {
+  const left = `${index + 1} / ${total}`
+  const right = remainingSec == null ? '' : formatCountdown(remainingSec)
+  const pad = Math.max(2, 22 - left.length - right.length)
+  return left + ' '.repeat(pad) + right
+}
+
+/** Compact countdown: `m:ss` from a minute up, otherwise `Nс`. */
+function formatCountdown(sec: number): string {
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60)
+    const s = sec % 60
+    return `${m}:${String(s).padStart(2, '0')}`
   }
-  const page = samples.slice(-2) // a reading page is now 2 tiles (576×144)
-  const ser = page.reduce((a, s) => a + s.serMs, 0)
-  const total = page.reduce((a, s) => a + s.totalMs, 0)
-  const net = Math.max(0, total - ser)
-  const roll = `≈ страница (2 тайла):  ser ${ser.toFixed(0)}  ·  net ${net.toFixed(0)}  ·  total ${total.toFixed(
-    0,
-  )}ms`
-  el.textContent = `perf (diag)\n${samples.map(line).join('\n')}\n${roll}`
+  return `${sec}с`
 }
 
 /** Short "n/total" position for the on-glasses status flashes. */
@@ -290,8 +303,7 @@ function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
       <img id="page" class="page" alt="страница"/>
       <div class="dwell-track"><div class="dwell-fill" id="dwell"></div></div>
     </div>
-    <div class="meta"><span class="pos" id="counter">1 / ${doc.pages.length}</span></div>
-    <pre class="perf" id="perf"></pre>
+    <div class="meta"><span class="countdown" id="countdown"></span><span class="pos" id="counter">1 / ${doc.pages.length}</span></div>
     ${controlsHtml(initialSpeed)}
     <p class="note">То, что вы видите здесь — реальный 4-bit растр, уходящий на очки
       (верхняя половина 576×144, 2 тайла). Автоскролл выдерживает паузу на каждой
@@ -353,10 +365,9 @@ const STYLE = `<style>
   /* Dwell countdown — fills over secPerPage, then the page flips. */
   .dwell-track { position:absolute; left:0; right:0; bottom:0; height:4px; background:rgba(255,255,255,.08); }
   .dwell-fill { height:100%; width:0; background:#5fbf5f; }
-  .meta { display:flex; justify-content:flex-end; margin:8px 0 0; }
+  .meta { display:flex; justify-content:space-between; align-items:baseline; margin:8px 0 0; }
+  .countdown { color:#5fbf5f; font-size:13px; font-variant-numeric:tabular-nums; min-height:1em; }
   .pos { color:#8a8a8a; font-size:13px; }
-  .perf { margin:8px 0 0; padding:8px 10px; background:#0d130d; border:1px solid #244016; border-radius:6px;
-          color:#8fd08f; font:11px/1.45 ui-monospace,Menlo,monospace; white-space:pre; overflow-x:auto; }
   .note { color:#7a7a7a; font-size:11.5px; margin:16px 0 0; line-height:1.4; }
   .err { color:#e29b9b; font:13px ui-monospace,monospace; margin:10px 0; }
 ${CONTROLS_STYLE}

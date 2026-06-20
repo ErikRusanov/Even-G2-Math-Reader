@@ -94,15 +94,21 @@ export class ScrollEngine {
     this.playing ? this.pause() : this.play()
   }
 
-  /** Manual step forward. Keeps the current play state (resumes dwell from the new page). */
+  /**
+   * Manual step forward. Switching a slide (re)starts autoscroll: if we were
+   * paused, this resumes playing from the new page; if already playing, it just
+   * re-times the dwell from there (goTo restarts the countdown).
+   */
   async next(): Promise<void> {
     if (this.busy || this.atEnd()) return
+    this.playing = true
     await this.goTo(this.index + 1)
   }
 
-  /** Manual step back. */
+  /** Manual step back. Resumes autoscroll from the new page (see next()). */
   async prev(): Promise<void> {
     if (this.busy || this.index === 0) return
+    this.playing = true
     await this.goTo(this.index - 1)
   }
 
