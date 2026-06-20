@@ -6,8 +6,8 @@
 //   slicePage()            each page → 4 dithered tiles + a green phone preview
 //   memoize()              cache the whole result by content hash
 //
-// The result is a flat list of Pages the reader UI flips through manually
-// (Iteration 3); the autoscroll engine (Iteration 4) will consume the same list.
+// The result is a flat list of Pages; the reader's autoscroll engine (Iteration 4)
+// auto-advances through this same list on a timer.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { renderDocumentPages } from '../render/document'

@@ -75,7 +75,30 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   Iter-4 autoscroll concern). Parser cross-checks the Iter-2 facts exactly (1/5/5 display,
   35/42/54 inline). `tsc` + `vite build` clean. **Eyes-on-glass calibration of font/scale still
   pending** (defaults in `DEFAULT_DOC_CONFIG`: fontPx 19, lineGap 9, displayPxPerEx 9, inline 8).
-- **Next: Iteration 4** — autoscroll with phone-side speed control (the working MVP).
+- **2026-06-20 — Iteration 4 DONE (autoscroll + phone speed control = the MVP):** the reader now
+  auto-advances the paged document on a timer. New modules: `src/teleprompter/speed.ts` (sec/page
+  model: `MIN/MAX/DEFAULT = 2/180/8` (up to 3 min/page; label switches to `m:ss` at ≥60 s),
+  `clampSpeed`/`formatSpeed`, **per-file persistence** in
+  `localStorage` key `g2reader:speed:<id>`), `src/teleprompter/engine.ts` (`ScrollEngine` — transport
+  state only, no SDK/DOM beyond rAF), `src/ui/settings.ts` (control bar: play/pause + ‹ › step +
+  speed slider, plus a live `ControlHandle` so the prompter mutates controls without re-rendering).
+  **The binding design fact:** a page flip = 4 serial tile pushes the host warned is *slow* (seconds),
+  so the engine's invariant is **a push never overlaps a dwell or another push** — the cycle is
+  `showPage(i)` → *await the slow push* → dwell `secPerPage` s → `showPage(i+1)`; i.e. `secPerPage`
+  times the PAUSE once a page is fully on-glass, NOT wall-clock per page, so slow BLE never eats
+  reading time and pushes can't pile up. `showPage` is the engine's single backpressure point
+  (awaited) and the only place a page is shown. Dwell uses a **rAF accumulator** (not one long
+  setTimeout) → smooth phone countdown bar + live speed changes restart the countdown immediately.
+  `src/ui/prompter.ts` rewritten: renders the reader shell **once**, then engine callbacks mutate
+  only the page `<img>`, counter, play button, nav-disabled, and dwell bar (no per-frame innerHTML
+  churn → slider keeps focus, image never flickers). Tapping the preview = play/pause (phone
+  stand-in for a glasses tap). Eager pre-render (Iter-3 `paginateDocument` progress bar) already
+  guarantees scroll never stalls. Phone-only (no glasses) still autoscrolls — pushes resolve as
+  no-ops. `tsc` + `vite build` clean. **← working MVP (Iterations 0→4).** **Eyes-on-glass pending:**
+  confirm dwell timing feels right at 4-bit and that serial 4-tile pushes keep up at the fast end
+  (sec/page floor may need raising on real BLE).
+- **Next: Iteration 5** — on-glasses control (TouchPad / R1): tap = pause/resume, swipe = speed ±
+  (input access confirmed in Iter 0; gesture→event mapping still needs eyes-on-glass).
 
 ## The one thing to understand
 

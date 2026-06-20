@@ -80,7 +80,7 @@ void (async () => {
     await glasses.connect()
     await glasses.setLayout([]) // text-only page: message + status + event layer
     glassesReady = true
-    await glasses.setStatus('G2 Math Reader · итерация 3')
+    await glasses.setStatus('G2 Math Reader · итерация 4')
     if (pending) mirror(pending)
   } catch (err) {
     console.warn('glasses unavailable — phone-only mode:', err)
