@@ -31,6 +31,18 @@ export function formatSpeed(sec: number): string {
   return `${mm}:${String(ss).padStart(2, '0')} мин/стр`
 }
 
+/**
+ * Step the speed one notch faster or slower — coarse on-glasses control (swipe ±,
+ * Iteration 5). The step is multiplicative (~25% per swipe) so one gesture feels
+ * the same across the whole 2…180 s/page range instead of crawling 1 s at a time
+ * at the slow end. Always returns an in-range value.
+ */
+export function stepSpeed(sec: number, direction: 'faster' | 'slower'): number {
+  const cur = clampSpeed(sec)
+  const delta = Math.max(1, Math.round(cur * 0.25))
+  return clampSpeed(direction === 'faster' ? cur - delta : cur + delta)
+}
+
 const storageKey = (id: string) => `g2reader:speed:${id}`
 
 /** The last speed used for this file, or the default if none/no storage. */

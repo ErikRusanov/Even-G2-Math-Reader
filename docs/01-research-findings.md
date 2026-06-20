@@ -102,6 +102,15 @@ evenrealities.com/teleprompter-glasses):
 > Still **pending eyes-on-glass**: confirming the physical gesture→event mapping (e.g. which
 > swipe direction is SCROLL_TOP, whether the ring actually emits these) on real hardware.
 > Fallback remains: drive autoscroll from a `setInterval` and set speed from the phone UI.
+>
+> ✅ **WIRED (Iteration 5):** the reader now subscribes to these gestures via the adapter's
+> `onInput` and maps them in `src/teleprompter/gestures.ts`: **tap = play/pause**, **scrollUp =
+> faster** (−dwell), **scrollDown = slower** (+dwell), **doubleTap / system-exit = leave reader**.
+> Speed swipes step multiplicatively (~25%/swipe via `stepSpeed`) and sync the engine + phone slider
+> + per-file persistence + a brief on-glass status flash. The chosen direction (swipe-up = faster)
+> is a documented assumption isolated to one `switch` in `gestures.ts` — **flip those two cases if
+> eyes-on-glass shows the physical direction inverted**. The ring actually emitting events and the
+> swipe→SCROLL_TOP/BOTTOM direction are the only items still needing hardware confirmation.
 
 ## 6. Math rendering — `confidence: MEDIUM (engineering inference) / HIGH for legibility (eyes-on-glass)`
 

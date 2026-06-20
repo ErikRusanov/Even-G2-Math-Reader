@@ -70,6 +70,11 @@ const control: GlassesControl = {
     if (!glassesReady) return
     await glasses.setStatus(text).catch(() => {})
   },
+  onInput(handler) {
+    // No bridge → no gestures; phone controls stay the baseline.
+    if (!glassesReady) return () => {}
+    return glasses.onInput(handler)
+  },
 }
 
 mountApp(root, { onScreenChange: mirror, glasses: control })

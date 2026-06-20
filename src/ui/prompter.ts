@@ -19,10 +19,12 @@
 
 import { paginateDocument, type Page, type PagedDoc } from '../teleprompter/pages'
 import { ScrollEngine, type ScrollState } from '../teleprompter/engine'
-import { loadSpeed, saveSpeed, formatSpeed } from '../teleprompter/speed'
+import { loadSpeed, saveSpeed, formatSpeed, clampSpeed, stepSpeed } from '../teleprompter/speed'
+import { gestureToAction } from '../teleprompter/gestures'
 import { controlsHtml, bindControls, CONTROLS_STYLE } from './settings'
 import type { LibraryEntry } from '../library/load'
 import type { Tile } from '../render/slice'
+import type { InputEvent } from '../glasses/types'
 
 /**
  * What the reader needs from the glasses, abstracted from the SDK adapter so the
@@ -39,6 +41,12 @@ export interface GlassesControl {
   /** Restore the native-text layout for menus. */
   exitReading(): Promise<void>
   setStatus(text: string): Promise<void>
+  /**
+   * Subscribe to normalized glasses gestures (tap / swipe / exit) while reading.
+   * Returns an unsubscribe fn. A no-op (returns `() => {}`) when no glasses are
+   * connected — the phone controls remain the baseline.
+   */
+  onInput(handler: (event: InputEvent) => void): () => void
 }
 
 export interface ReaderHooks {
@@ -93,6 +101,11 @@ async function runReader(
   renderReader(root, doc, initialSpeed)
   const els = grabRefs(root)
 
+  // Latest engine state, so glasses gestures can act on current index/speed/play.
+  let last: ScrollState | null = null
+  // Live unsubscribe for the glasses gesture stream (set once subscribed).
+  let unsubscribe: () => void = () => {}
+
   // Paint a page on the phone (preview) and on the glasses (tiles). Awaited by the
   // engine, so the next dwell starts only once the slow tile push has landed.
   const showPage = async (index: number) => {
@@ -108,6 +121,7 @@ async function runReader(
     secPerPage: initialSpeed,
     showPage,
     onState: (s: ScrollState) => {
+      last = s
       controls.setPlaying(s.playing)
       controls.setNav(s.index > 0 && !s.busy, !s.atEnd && !s.busy)
       controls.setBusy(s.busy)
@@ -129,21 +143,67 @@ async function runReader(
   })
   controls.setSpeed(initialSpeed)
 
-  // Tapping the page preview = play/pause (phone stand-in for a glasses tap).
-  els.image.addEventListener('click', () => engine.toggle())
+  // Brief on-glasses feedback (native text line). Page flips overwrite it with the
+  // position counter, so it lingers only while paused — exactly when it's useful.
+  const flashStatus = (text: string) => void glasses.setStatus(text).catch(() => {})
 
-  els.back.addEventListener('click', async () => {
+  // Apply a speed coming from the glasses (swipe): move the engine, the slider,
+  // persistence, and the status line all together (the slider's own handler only
+  // touches the engine + storage, since it IS the source).
+  const applySpeed = (sec: number) => {
+    const clamped = clampSpeed(sec)
+    engine.setSpeed(clamped)
+    controls.setSpeed(clamped)
+    saveSpeed(entry.id, clamped)
+    flashStatus(`скорость ${formatSpeed(clamped)}`)
+  }
+
+  // Single exit path (back button, double-tap, or app closed on the glasses):
+  // unsubscribe, stop the engine, restore the menu layout, return to the File screen.
+  let exited = false
+  const exitReader = async () => {
+    if (exited) return
+    exited = true
     markDisposed()
+    unsubscribe()
     engine.dispose()
     await glasses.exitReading().catch(() => {})
     hooks.onBack()
-  })
+  }
+
+  // Iteration 5 — drive the reader from glasses gestures. Mapping lives in
+  // teleprompter/gestures; here we only execute the resulting action.
+  const handleGesture = (event: InputEvent) => {
+    const action = gestureToAction(event.type)
+    if (!action) return
+    const speed = last?.secPerPage ?? initialSpeed
+    switch (action) {
+      case 'toggle':
+        engine.toggle() // onState fires synchronously → `last` is fresh below
+        flashStatus(last?.playing ? `чтение · ${posLabel(last)}` : `пауза · ${posLabel(last)}`)
+        break
+      case 'faster':
+        applySpeed(stepSpeed(speed, 'faster'))
+        break
+      case 'slower':
+        applySpeed(stepSpeed(speed, 'slower'))
+        break
+      case 'exit':
+        void exitReader()
+        break
+    }
+  }
+
+  // Tapping the page preview = play/pause (phone stand-in for a glasses tap).
+  els.image.addEventListener('click', () => engine.toggle())
+  els.back.addEventListener('click', () => void exitReader())
 
   await glasses.enterReading().catch(() => {})
   if (isDisposed()) {
     engine.dispose()
     return
   }
+  unsubscribe = glasses.onInput(handleGesture)
   await engine.start()
 }
 
@@ -165,6 +225,12 @@ function grabRefs(root: HTMLElement): Refs {
     dwell: root.querySelector<HTMLElement>('#dwell')!,
     back: root.querySelector<HTMLElement>('#back')!,
   }
+}
+
+/** Short "n/total" position for the on-glasses status flashes. */
+function posLabel(s: ScrollState | null): string {
+  if (!s) return ''
+  return `${s.index + 1}/${s.pageCount}`
 }
 
 function pageSub(s: ScrollState): string {

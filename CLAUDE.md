@@ -97,8 +97,29 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   no-ops. `tsc` + `vite build` clean. **← working MVP (Iterations 0→4).** **Eyes-on-glass pending:**
   confirm dwell timing feels right at 4-bit and that serial 4-tile pushes keep up at the fast end
   (sec/page floor may need raising on real BLE).
-- **Next: Iteration 5** — on-glasses control (TouchPad / R1): tap = pause/resume, swipe = speed ±
-  (input access confirmed in Iter 0; gesture→event mapping still needs eyes-on-glass).
+- **2026-06-20 — Iteration 5 DONE (on-glasses control: TouchPad / R1):** reading is now drivable
+  from the glasses themselves, not just the phone. The Iter-0 adapter already normalized raw
+  protobuf events into SDK-agnostic gestures (`onInput` → `tap`/`doubleTap`/`scrollUp`/`scrollDown`/
+  `exit`, with `source`), so Iter 5 is pure wiring + the gesture→intent map. New module
+  `src/teleprompter/gestures.ts` (`gestureToAction`) is the **one documented place** that binds
+  generic gestures to reader intent — keeps the `src/glasses/` adapter free of teleprompter concepts:
+  **tap = play/pause**, **scrollUp = faster**, **scrollDown = slower**, **doubleTap / system-exit =
+  leave reader**. `speed.ts` gains `stepSpeed` (coarse **multiplicative ~25%/swipe** step so one
+  gesture feels equal across the whole 2…180 s/page range, not 1 s crawls at the slow end).
+  `GlassesControl` gains `onInput(handler) → unsubscribe` (implemented in `main.ts` over the adapter;
+  a no-op `() => {}` with no bridge, so phone control stays the baseline and desktop dev is
+  unaffected). `prompter.ts` subscribes in `runReader` *after* `enterReading`, tracks the latest
+  `ScrollState` (`last`) so a swipe acts on the current speed, and routes every gesture through one
+  `handleGesture`. A swipe `applySpeed` moves engine + phone slider + per-file persistence + a brief
+  on-glass status flash together (the slider's own handler only touches engine+storage since it IS
+  the source). Back-button, double-tap, and app-closed-on-glasses now all funnel through a single
+  idempotent `exitReader` (unsubscribe → dispose → restore menu layout → back to File). `tsc` +
+  `vite build` clean. **Eyes-on-glass pending:** the **swipe direction → faster/slower** convention
+  (swipe-up = faster) is a documented assumption isolated to one `switch` in `gestures.ts` — flip the
+  two `scroll*` cases if hardware shows it inverted; also confirm the R1 ring actually emits these.
+- **Next: Iteration 6** — Polish: dithering/legibility tuning on real lectures, `IndexedDB` strip
+  cache (survives WebView reload), reading-position persistence per file, final `src/glasses/`
+  cleanup for the current SDK version.
 
 ## The one thing to understand
 

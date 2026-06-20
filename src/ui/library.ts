@@ -38,6 +38,9 @@ const NULL_GLASSES: GlassesControl = {
   async showPage() {},
   async exitReading() {},
   async setStatus() {},
+  onInput() {
+    return () => {}
+  },
 }
 
 export interface AppHooks {
