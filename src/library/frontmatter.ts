@@ -3,7 +3,7 @@
 //
 // Format (see docs/03 "File format"):
 //   ---
-//   title: Билет 25. Метод отражений
+//   title: Ticket 25. Reflection method
 //   id: cm-25
 //   ---
 //   <markdown body with $…$ / $$…$$ math>

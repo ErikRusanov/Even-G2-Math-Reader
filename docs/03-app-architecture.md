@@ -30,11 +30,11 @@ Chosen because it's natural for the source material, human-editable, and trivial
 
 ````markdown
 ---
-title: Билет 25. Метод отражений
+title: Ticket 25. Reflection method
 id: cm-25
 ---
 
-Матрица Хаусхолдера: $U = I - 2ww^T$, где $\|w\|_2 = 1$.
+Householder matrix: $U = I - 2ww^T$, where $\|w\|_2 = 1$.
 
 $$
 U_k = \begin{pmatrix} I_{k-1} & 0 \\ 0 & U'_k \end{pmatrix}

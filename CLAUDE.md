@@ -67,7 +67,7 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   `src/cache/index.ts` (FNV-1a content hash + promise-memo, keyed by render-version+id+body so
   re-opening a file is instant), `src/teleprompter/pages.ts` (`paginateDocument(entry)` →
   `PagedDoc{pages:[{tiles,preview}]}`), `src/ui/prompter.ts` (reader screen: progress bar →
-  manual ‹ Назад / Вперёд ›, mirrors each page on the phone). Glasses now have **two modes** behind
+  manual ‹ Back / Forward ›, mirrors each page on the phone). Glasses now have **two modes** behind
   the adapter: menu = native text; reading = the **4-tile IMAGE layout** — `main.ts` implements a
   `GlassesControl` (`enterReading`/`showPage`/`exitReading`) so the UI never imports the SDK, and
   switches `setLayout(layoutTile2x2())` ↔ `setLayout([])` on entering/leaving the reader. 4 tiles
@@ -125,7 +125,7 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   (~3 s) and visibly **tore** — left tile reverted before the right one landed. Fix follows straight
   from the cause: repaint a **single** bottom tile (the bottom-left), so the update is **atomic (no
   tear)** and ~half the cost. `hudTile()` picks it; `renderSpeedHudTiles` decodes that one clean tile,
-  draws a centered bordered modal (log-scaled slider, `formatSpeed` label, «быстро/медленно» ends)
+  draws a centered bordered modal (log-scaled slider, `formatSpeed` label, «fast/slow» ends)
   over the kept page math, re-encodes, returns **one** tile. Transient (TV-volume-bar): ~2.2 s after
   the last swipe the clean tile is restored from its **cached bytes** (`hudCleanTiles`, no re-encode),
   **guarded on the page index** so an autoscroll flip (repaints all 4 tiles) is never clobbered by a
@@ -176,15 +176,15 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   speed:** `gestures.ts` maps `scrollUp → 'next'`, `scrollDown → 'prev'` (was faster/slower);
   speed is now phone-slider-only. A manual flip routes through `engine.next()/prev()` → `goTo`,
   which keeps the current play state and **restarts the dwell** if playing — so autoscroll never
-  stops, it just re-times from the page you jumped to (the user's "таймер обнуляется, но не
-  перестаёт работать"). This retired the entire on-glass **speed HUD** wiring in `prompter.ts`
+  stops, it just re-times from the page you jumped to (the user's "the timer resets, but does not
+  stop running"). This retired the entire on-glass **speed HUD** wiring in `prompter.ts`
   (`showSpeedHud`/`restoreHud`/coalescing/`applySpeed` + the `hud`/`stepSpeed`/`clampSpeed` imports);
   `src/teleprompter/hud.ts` is now orphaned (kept on disk, tree-shaken out — restore if glass-side
   speed control ever returns). **(2) Page indicator on glass:** `showPage` sets the bottom status
   line to a clean **`N / total`** (dropped the title prefix) — visible because the 2-tile page only
   covers the top half, so the status line (y 260–288) sits in the blank bottom band. **(3) Stale
   menu title fix:** on real G2 the native **message** region kept showing the File-screen title
-  (e.g. «Билет 1…») in that blank bottom band — the phone preview is pure image so it never showed
+  (e.g. «Ticket 1…») in that blank bottom band — the phone preview is pure image so it never showed
   it, and `setMessage(' ')` doesn't reliably clear (whitespace is treated as no-op). Fixed
   **structurally** in `glasses/buildContainers`: the message text container is now **omitted entirely
   whenever image slots are present** (`includeMessage = clamped.length === 0`), so reading mode has
@@ -197,16 +197,16 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   the native-text **message** region (already present when there are no image slots) now shows a
   **windowed library list** with a `> ` marker on the highlighted row, and gestures navigate it:
   **swipe ↑/↓ moves the highlight, tap reads** the highlighted file — **straight into reading, no
-  File-screen stop** (`select → read(...)`, per the user's "при тапе сразу запускается старт режим").
+  File-screen stop** (`select → read(...)`, per the user's "on tap, reading mode starts immediately").
   Exiting the reader (double-tap) still lands on the File screen — its `backToFile` onBack is shared
-  with the phone — where glasses **tap = «Читать»** (re-enter) and **double-tap = back to library**.
+  with the phone — where glasses **tap = «Read»** (re-enter) and **double-tap = back to library**.
   **Autoplay on open:** the reader no longer opens paused — `prompter.ts runReader` calls
   `engine.play()` right after `engine.start()` (once the first page has landed), so opening a file
-  goes straight into autoscroll with no separate «Старт» tap (`play()` no-ops on a 1-page doc or if
+  goes straight into autoscroll with no separate «Play» tap (`play()` no-ops on a 1-page doc or if
   disposed mid-load). The reader transport (Iters 4–6) is otherwise unchanged.
   **On-glass loader:** tapping a bilet runs `paginateDocument` (seconds) while still in menu/text
   mode, so `mountReader` now mirrors the phone's progress bar to the glasses via `setMessage`
-  («<title>… Загрузка страниц… N/total», status «подготовка страниц…»), updated from the same
+  («<title>… Loading pages… N/total», status «preparing pages…»), updated from the same
   `onProgress` callback; it's replaced by the first page once `enterReading` switches to the image
   layout. **Dimmer ink (brightness):** the SDK has **no brightness API** (`even_hub_sdk@0.0.10` =
   page/image/text/audio/IMU only) — the app cannot set the glasses' brightness, which is governed by
@@ -233,7 +233,7 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   connected, so the initial library list is painted the moment the bridge is ready (menu `setMessage`
   is a no-op before then). `GlassesControl` gained `setMessage` (guarded on `!glassesReady || imageMode`
   so it only writes the message region in menu mode); `enterReading`/`exitReading` no longer touch
-  menu text (the UI re-renders on `onBack`). Phone selection (tap rows / «Читать» button) is
+  menu text (the UI re-renders on `onBack`). Phone selection (tap rows / «Read» button) is
   untouched — both input paths drive the same `open`/`read`/`back` closures. `tsc` + `vite build`
   clean. **Eyes-on-glass pending:** confirm swipe ↑ = previous file (vs next) reads right, and that
   the `> ` marker + Cyrillic titles render legibly in the native list.

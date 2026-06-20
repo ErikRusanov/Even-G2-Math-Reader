@@ -97,10 +97,10 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
   function renderGlasses() {
     if (screen.kind === 'library') {
       void glasses.setMessage(glassesLibraryText(library, menuSel))
-      void glasses.setStatus('тап — читать · свайп — листать')
+      void glasses.setStatus('tap — read · swipe — browse')
     } else if (screen.kind === 'file') {
-      void glasses.setMessage(`${truncate(screen.entry.title, 24)}\n\nтап — читать на очках`)
-      void glasses.setStatus('тап — читать · 2× — назад')
+      void glasses.setMessage(`${truncate(screen.entry.title, 24)}\n\ntap — read on glasses`)
+      void glasses.setStatus('tap — read · 2× — back')
     }
     // reader: the image tiles own the surface; nothing to push here.
   }
@@ -163,7 +163,7 @@ function truncate(s: string, max: number): string {
  */
 function glassesLibraryText(library: LibraryEntry[], sel: number): string {
   const total = library.length
-  if (total === 0) return 'Библиотека пуста\n\nНет файлов в /content.'
+  if (total === 0) return 'Library is empty\n\nNo files in /content.'
   const WINDOW = 5
   const start = Math.max(0, Math.min(sel - (WINDOW >> 1), total - WINDOW))
   const end = Math.min(total, start + WINDOW)
@@ -171,7 +171,7 @@ function glassesLibraryText(library: LibraryEntry[], sel: number): string {
   for (let i = start; i < end; i++) {
     rows.push(`${i === sel ? '> ' : '  '}${truncate(library[i].title, 22)}`)
   }
-  return `Библиотека  ${sel + 1}/${total}\n\n${rows.join('\n')}`
+  return `Library  ${sel + 1}/${total}\n\n${rows.join('\n')}`
 }
 
 // ── Library screen ───────────────────────────────────────────────────────────
@@ -182,15 +182,15 @@ function renderLibrary(root: HTMLElement, library: LibraryEntry[], open: (e: Lib
       (e, i) => `
       <button class="row" data-i="${i}">
         <div class="row-title">${escapeHtml(e.title)}</div>
-        <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} формул · ${snippet(e.body)}</div>
+        <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} formulas · ${snippet(e.body)}</div>
       </button>`,
     )
     .join('')
 
   root.innerHTML = shell(`
-    <h1 class="h1">Библиотека</h1>
-    <p class="sub">${library.length} файлов · нажмите, чтобы открыть</p>
-    <div class="list">${items || '<p class="sub">Нет файлов в <code>/content</code>.</p>'}</div>
+    <h1 class="h1">Library</h1>
+    <p class="sub">${library.length} files · tap to open</p>
+    <div class="list">${items || '<p class="sub">No files in <code>/content</code>.</p>'}</div>
   `)
 
   root.querySelectorAll<HTMLButtonElement>('.row').forEach(btn =>
@@ -213,17 +213,17 @@ function renderFile(root: HTMLElement, entry: LibraryEntry, back: () => void, re
     .join('')
 
   root.innerHTML = shell(`
-    <button class="back" id="back">← Библиотека</button>
+    <button class="back" id="back">← Library</button>
     <h1 class="h1">${escapeHtml(entry.title)}</h1>
     <div class="fm">
       <span><b>id</b> ${escapeHtml(entry.id)}</span>
-      <span><b>файл</b> <code>${escapeHtml(entry.path)}</code></span>
-      <span><b>математика</b> ${display} display · ${inline} inline</span>
+      <span><b>file</b> <code>${escapeHtml(entry.path)}</code></span>
+      <span><b>math</b> ${display} display · ${inline} inline</span>
     </div>
-    <button class="read" id="read">▶ Читать на очках</button>
+    <button class="read" id="read">▶ Read on glasses</button>
     <div class="doc">${bodyHtml}</div>
-    <p class="note">Сверху — превью на телефоне (чёткий SVG). Кнопка «Читать на очках»
-      рендерит файл в 4-bit растр и листает его постранично — итерация 3.</p>
+    <p class="note">Above is the phone preview (crisp SVG). The «Read on glasses» button
+      renders the file to a 4-bit raster and pages through it — iteration 3.</p>
   `)
 
   root.querySelector('#back')!.addEventListener('click', back)

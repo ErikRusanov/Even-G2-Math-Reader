@@ -22,13 +22,13 @@ export function clampSpeed(sec: number): number {
   return Math.min(MAX_SEC_PER_PAGE, Math.max(MIN_SEC_PER_PAGE, Math.round(sec)))
 }
 
-/** Human label: `8 с/стр` under a minute, `2:30 мин/стр` at/above one. */
+/** Human label: `8 s/page` under a minute, `2:30 min/page` at/above one. */
 export function formatSpeed(sec: number): string {
   const s = clampSpeed(sec)
-  if (s < 60) return `${s} с/стр`
+  if (s < 60) return `${s} s/page`
   const mm = Math.floor(s / 60)
   const ss = s % 60
-  return `${mm}:${String(ss).padStart(2, '0')} мин/стр`
+  return `${mm}:${String(ss).padStart(2, '0')} min/page`
 }
 
 /**

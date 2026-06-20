@@ -68,7 +68,7 @@ export function mountReader(
   // (the image layout is only entered later in runReader), so a native-text
   // message lands — the phone already shows the same progress.
   void glasses.setMessage(glassesLoadingText(entry, 0, 0)).catch(() => {})
-  void glasses.setStatus('подготовка страниц…').catch(() => {})
+  void glasses.setStatus('preparing pages…').catch(() => {})
 
   void (async () => {
     let doc: PagedDoc
@@ -85,7 +85,7 @@ export function mountReader(
     if (disposed) return
 
     if (doc.pages.length === 0) {
-      renderError(root, entry, 'документ пуст — нечего показывать', hooks.onBack)
+      renderError(root, entry, 'document is empty — nothing to show', hooks.onBack)
       return
     }
 
@@ -133,7 +133,7 @@ async function runReader(
     const s = last
     const active = !!s && s.playing && !s.busy && !s.atEnd
     const remaining = active ? Math.max(0, Math.ceil(s!.secPerPage * (1 - fraction))) : null
-    els.countdown.textContent = remaining == null ? '' : `до перелистывания: ${formatCountdown(remaining)}`
+    els.countdown.textContent = remaining == null ? '' : `next page in: ${formatCountdown(remaining)}`
     pushStatus(glassStatusLine(s ? s.index : engine.getIndex(), total, remaining))
   }
 
@@ -207,7 +207,7 @@ async function runReader(
     switch (action) {
       case 'toggle':
         engine.toggle() // onState fires synchronously → `last` is fresh below
-        flashStatus(last?.playing ? `чтение · ${posLabel(last)}` : `пауза · ${posLabel(last)}`)
+        flashStatus(last?.playing ? `reading · ${posLabel(last)}` : `paused · ${posLabel(last)}`)
         break
       case 'next':
         void engine.next()
@@ -233,7 +233,7 @@ async function runReader(
   unsubscribe = glasses.onInput(handleGesture)
   await engine.start()
   // Autoplay from the first page — opening a file goes straight into reading
-  // (no separate «Старт» tap). play() no-ops on a 1-page doc or if disposed.
+  // (no separate «Play» tap). play() no-ops on a 1-page doc or if disposed.
   if (!isDisposed()) engine.play()
 }
 
@@ -272,14 +272,14 @@ function glassStatusLine(index: number, total: number, remainingSec: number | nu
   return left + ' '.repeat(pad) + right
 }
 
-/** Compact countdown: `m:ss` from a minute up, otherwise `Nс`. */
+/** Compact countdown: `m:ss` from a minute up, otherwise `Ns`. */
 function formatCountdown(sec: number): string {
   if (sec >= 60) {
     const m = Math.floor(sec / 60)
     const s = sec % 60
     return `${m}:${String(s).padStart(2, '0')}`
   }
-  return `${sec}с`
+  return `${sec}s`
 }
 
 /** Short "n/total" position for the on-glasses status flashes. */
@@ -289,34 +289,34 @@ function posLabel(s: ScrollState | null): string {
 }
 
 function pageSub(s: ScrollState): string {
-  if (s.busy) return 'отправка страницы на очки…'
-  if (s.atEnd && !s.playing) return 'конец документа'
-  return s.playing ? `автоскролл · ${formatSpeed(s.secPerPage)}` : 'на паузе · нажмите «Старт»'
+  if (s.busy) return 'sending page to glasses…'
+  if (s.atEnd && !s.playing) return 'end of document'
+  return s.playing ? `autoscroll · ${formatSpeed(s.secPerPage)}` : 'paused · press «Play»'
 }
 
 function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
   root.innerHTML = shell(`
-    <button class="back" id="back">← Файл</button>
+    <button class="back" id="back">← File</button>
     <h1 class="h1">${escapeHtml(doc.title)}</h1>
-    <p class="sub" id="sub">на паузе · нажмите «Старт»</p>
+    <p class="sub" id="sub">paused · press «Play»</p>
     <div class="surface">
-      <img id="page" class="page" alt="страница"/>
+      <img id="page" class="page" alt="page"/>
       <div class="dwell-track"><div class="dwell-fill" id="dwell"></div></div>
     </div>
     <div class="meta"><span class="countdown" id="countdown"></span><span class="pos" id="counter">1 / ${doc.pages.length}</span></div>
     ${controlsHtml(initialSpeed)}
-    <p class="note">То, что вы видите здесь — реальный 4-bit растр, уходящий на очки
-      (верхняя половина 576×144, 2 тайла). Автоскролл выдерживает паузу на каждой
-      странице после её полной отправки на очки, поэтому медленный BLE-пуш не
-      съедает время чтения. На очках: свайп вверх — следующая страница, вниз —
-      предыдущая, тап — пауза/старт.</p>
+    <p class="note">What you see here is the real 4-bit raster sent to the glasses
+      (top half 576×144, 2 tiles). Autoscroll holds the dwell on each page only
+      after it has been fully pushed to the glasses, so a slow BLE push never eats
+      into reading time. On the glasses: swipe up — next page, down —
+      previous, tap — pause/play.</p>
   `)
 }
 
 /** Native-text loader for the glasses while pages render (mirrors the phone bar). */
 function glassesLoadingText(entry: LibraryEntry, done: number, total: number): string {
   const head = entry.title.length > 24 ? entry.title.slice(0, 23) + '…' : entry.title
-  const prog = total ? `Загрузка страниц… ${done}/${total}` : 'Рендер математики…'
+  const prog = total ? `Loading pages… ${done}/${total}` : 'Rendering math…'
   return `${head}\n\n${prog}`
 }
 
@@ -324,17 +324,17 @@ function renderLoading(root: HTMLElement, entry: LibraryEntry, done: number, tot
   const pct = total ? Math.round((done / total) * 100) : 0
   root.innerHTML = shell(`
     <h1 class="h1">${escapeHtml(entry.title)}</h1>
-    <p class="sub">Подготовка страниц для очков…</p>
+    <p class="sub">Preparing pages for the glasses…</p>
     <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-    <p class="sub">${total ? `${done}/${total} страниц` : 'рендер математики…'}</p>
+    <p class="sub">${total ? `${done}/${total} pages` : 'rendering math…'}</p>
   `)
 }
 
 function renderError(root: HTMLElement, entry: LibraryEntry, msg: string, onBack: () => void) {
   root.innerHTML = shell(`
-    <button class="back" id="back">← Файл</button>
+    <button class="back" id="back">← File</button>
     <h1 class="h1">${escapeHtml(entry.title)}</h1>
-    <p class="err">Не удалось отрендерить: ${escapeHtml(msg)}</p>
+    <p class="err">Failed to render: ${escapeHtml(msg)}</p>
   `)
   root.querySelector('#back')!.addEventListener('click', onBack)
 }

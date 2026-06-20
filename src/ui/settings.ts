@@ -31,15 +31,15 @@ export function controlsHtml(initialSec: number): string {
   return `
     <div class="ctl">
       <div class="transport">
-        <button class="ctl-step" data-act="prev" aria-label="Назад">‹</button>
-        <button class="ctl-play" data-act="play">▶ Старт</button>
-        <button class="ctl-step" data-act="next" aria-label="Вперёд">›</button>
+        <button class="ctl-step" data-act="prev" aria-label="Back">‹</button>
+        <button class="ctl-play" data-act="play">▶ Play</button>
+        <button class="ctl-step" data-act="next" aria-label="Forward">›</button>
       </div>
       <div class="speed">
-        <div class="speed-row"><span>Скорость</span><span class="speed-val">${formatSpeed(initialSec)}</span></div>
+        <div class="speed-row"><span>Speed</span><span class="speed-val">${formatSpeed(initialSec)}</span></div>
         <input class="speed-range" type="range" min="${MIN_SEC_PER_PAGE}" max="${MAX_SEC_PER_PAGE}"
                step="1" value="${initialSec}" />
-        <div class="speed-ends"><span>быстро</span><span>медленно</span></div>
+        <div class="speed-ends"><span>fast</span><span>slow</span></div>
       </div>
     </div>`
 }
@@ -63,7 +63,7 @@ export function bindControls(root: HTMLElement, handlers: ControlHandlers): Cont
 
   return {
     setPlaying(playing) {
-      play.textContent = playing ? '⏸ Пауза' : '▶ Старт'
+      play.textContent = playing ? '⏸ Pause' : '▶ Play'
       play.classList.toggle('is-playing', playing)
     },
     setNav(canPrev, canNext) {

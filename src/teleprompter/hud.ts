@@ -103,7 +103,7 @@ function drawSpeedModal(ctx: CanvasRenderingContext2D, speed: number) {
   ctx.textAlign = 'center'
   ctx.textBaseline = 'alphabetic'
   ctx.font = 'bold 18px system-ui, -apple-system, sans-serif'
-  ctx.fillText(`Скорость: ${formatSpeed(speed)}`, x + w / 2, y + 34)
+  ctx.fillText(`Speed: ${formatSpeed(speed)}`, x + w / 2, y + 34)
 
   // Track (dim), filled portion (bright), knob — log-scaled across the range.
   const m = 24 // inner side margin
@@ -123,9 +123,9 @@ function drawSpeedModal(ctx: CanvasRenderingContext2D, speed: number) {
   ctx.font = '11px system-ui, -apple-system, sans-serif'
   ctx.fillStyle = '#9a9a9a'
   ctx.textAlign = 'left'
-  ctx.fillText('быстро', x0, y + 86)
+  ctx.fillText('fast', x0, y + 86)
   ctx.textAlign = 'right'
-  ctx.fillText('медленно', x1, y + 86)
+  ctx.fillText('slow', x1, y + 86)
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
