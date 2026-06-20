@@ -70,6 +70,20 @@ export function mountReader(
   void glasses.setMessage(glassesLoadingText(entry, 0, 0)).catch(() => {})
   void glasses.setStatus('preparing pages…').catch(() => {})
 
+  // The page render can take seconds; let the glasses abort it (double-tap /
+  // app-exit) so a mis-tapped file isn't a dead wait. This handler lives only
+  // for the loading phase — runReader installs its own once reading starts, and
+  // we unsubscribe before handing off. We're still in menu/text mode here, so
+  // cancelling just returns to the File screen (no image layout to tear down).
+  const offLoad = glasses.onInput(event => {
+    if (disposed) return
+    if (gestureToAction(event.type) === 'exit') {
+      disposed = true
+      offLoad()
+      hooks.onBack()
+    }
+  })
+
   void (async () => {
     let doc: PagedDoc
     try {
@@ -79,10 +93,14 @@ export function mountReader(
         void glasses.setMessage(glassesLoadingText(entry, done, total)).catch(() => {})
       })
     } catch (err) {
+      offLoad()
       if (!disposed) renderError(root, entry, String(err), hooks.onBack)
       return
     }
     if (disposed) return
+
+    // Hand gesture control over to runReader before it subscribes its own.
+    offLoad()
 
     if (doc.pages.length === 0) {
       renderError(root, entry, 'document is empty — nothing to show', hooks.onBack)
