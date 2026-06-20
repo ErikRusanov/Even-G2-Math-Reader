@@ -110,10 +110,19 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   a no-op `() => {}` with no bridge, so phone control stays the baseline and desktop dev is
   unaffected). `prompter.ts` subscribes in `runReader` *after* `enterReading`, tracks the latest
   `ScrollState` (`last`) so a swipe acts on the current speed, and routes every gesture through one
-  `handleGesture`. A swipe `applySpeed` moves engine + phone slider + per-file persistence + a brief
-  on-glass status flash together (the slider's own handler only touches engine+storage since it IS
-  the source). Back-button, double-tap, and app-closed-on-glasses now all funnel through a single
-  idempotent `exitReader` (unsubscribe → dispose → restore menu layout → back to File). `tsc` +
+  `handleGesture`. A swipe `applySpeed` moves engine + phone slider + per-file persistence + an
+  **on-glass speed HUD** together (the slider's own handler only touches engine+storage since it IS
+  the source). **On-glass speed HUD (`src/teleprompter/hud.ts`):** in reading mode the surface is
+  fully covered by the 2×2 image tiles (all 4 image containers used) and the native status line sits
+  *behind* them — a status-text speed flash is **invisible on-glass**. So the HUD paints the speed
+  indicator INTO the bottom two tiles: decode the page's clean bottom tiles → draw a slim band +
+  slider (log-scaled knob, `formatSpeed` label, «быстро/медленно» ends) over their lower strip →
+  re-crop + re-encode → push the 2 tiles. Transient (TV-volume-bar): after ~2.2 s the clean bottom
+  tiles are restored, **guarded on the page index** so an autoscroll flip (which repaints all 4
+  tiles) is never clobbered by a stale restore. Fired only by glasses swipes (the phone slider drags
+  too fast to push per-tick). Back-button, double-tap, and app-closed-on-glasses now all funnel
+  through a single idempotent `exitReader` (unsubscribe → dispose → restore menu layout → back to
+  File). `tsc` +
   `vite build` clean. **Eyes-on-glass pending:** the **swipe direction → faster/slower** convention
   (swipe-up = faster) is a documented assumption isolated to one `switch` in `gestures.ts` — flip the
   two `scroll*` cases if hardware shows it inverted; also confirm the R1 ring actually emits these.

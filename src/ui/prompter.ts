@@ -21,6 +21,7 @@ import { paginateDocument, type Page, type PagedDoc } from '../teleprompter/page
 import { ScrollEngine, type ScrollState } from '../teleprompter/engine'
 import { loadSpeed, saveSpeed, formatSpeed, clampSpeed, stepSpeed } from '../teleprompter/speed'
 import { gestureToAction } from '../teleprompter/gestures'
+import { renderSpeedHudTiles, bottomTiles } from '../teleprompter/hud'
 import { controlsHtml, bindControls, CONTROLS_STYLE } from './settings'
 import type { LibraryEntry } from '../library/load'
 import type { Tile } from '../render/slice'
@@ -143,19 +144,55 @@ async function runReader(
   })
   controls.setSpeed(initialSpeed)
 
-  // Brief on-glasses feedback (native text line). Page flips overwrite it with the
-  // position counter, so it lingers only while paused — exactly when it's useful.
+  // Brief on-glasses feedback (native text line). Hidden behind the image tiles
+  // while reading, so it only really shows in transitions — keep it for play/pause.
   const flashStatus = (text: string) => void glasses.setStatus(text).catch(() => {})
 
-  // Apply a speed coming from the glasses (swipe): move the engine, the slider,
-  // persistence, and the status line all together (the slider's own handler only
-  // touches the engine + storage, since it IS the source).
+  // ── On-glasses speed HUD ──────────────────────────────────────────────────
+  // A swipe changes speed; the status line is hidden behind the tiles, so paint a
+  // transient slider into the bottom two tiles (like a TV volume bar) and restore
+  // the clean tiles after a beat. Restores are guarded on the page index so a page
+  // flip (which repaints all 4 tiles) is never clobbered by a stale restore.
+  const HUD_VISIBLE_MS = 2200
+  let hudTimer: ReturnType<typeof setTimeout> | null = null
+  const clearHudTimer = () => {
+    if (hudTimer != null) {
+      clearTimeout(hudTimer)
+      hudTimer = null
+    }
+  }
+  const showSpeedHud = (speed: number) => {
+    if (!glasses.available) return
+    const idx = engine.getIndex()
+    const page = doc.pages[idx]
+    clearHudTimer()
+    void (async () => {
+      let tiles: Tile[]
+      try {
+        tiles = await renderSpeedHudTiles(page.tiles, speed)
+      } catch {
+        return
+      }
+      if (isDisposed() || engine.getIndex() !== idx) return // page moved — drop it
+      await glasses.showPage(tiles).catch(() => {})
+      if (isDisposed()) return
+      hudTimer = setTimeout(() => {
+        hudTimer = null
+        if (isDisposed() || engine.getIndex() !== idx) return // a flip already cleaned up
+        void glasses.showPage(bottomTiles(page.tiles)).catch(() => {})
+      }, HUD_VISIBLE_MS)
+    })()
+  }
+
+  // Apply a speed coming from the glasses (swipe): move the engine, the phone
+  // slider, persistence, and the on-glass HUD together (the phone slider's own
+  // handler only touches engine + storage, since it IS the source).
   const applySpeed = (sec: number) => {
     const clamped = clampSpeed(sec)
     engine.setSpeed(clamped)
     controls.setSpeed(clamped)
     saveSpeed(entry.id, clamped)
-    flashStatus(`скорость ${formatSpeed(clamped)}`)
+    showSpeedHud(clamped)
   }
 
   // Single exit path (back button, double-tap, or app closed on the glasses):
@@ -166,6 +203,7 @@ async function runReader(
     exited = true
     markDisposed()
     unsubscribe()
+    clearHudTimer()
     engine.dispose()
     await glasses.exitReading().catch(() => {})
     hooks.onBack()
