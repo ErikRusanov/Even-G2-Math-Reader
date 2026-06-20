@@ -15,8 +15,9 @@ monochrome-green display + input device** (touchpad, gestures, voice, R1 ring).
 The **hardest constraint is rendering dense math**. The native text path enforces ~25
 characters per line — LaTeX-grade fractions, sums, matrices, and subscripts are **impossible
 as text**. The only viable path is to **pre-render each formula (or whole page) to a 4-bit
-grayscale bitmap** with KaTeX/MathJax and push it as an **image payload**. The exact image
-API limits are the #1 thing to validate on real hardware (see open questions).
+grayscale bitmap** with KaTeX/MathJax and push it as an **image payload**. As of Iteration 0 the
+image API is **settled** (see "Open questions — RESOLVED" below): send encoded PNG/JPEG bytes per
+image container (≤288×144, up to 4 tiled to fill 576×288); the host does the 4-bit conversion.
 
 ---
 
@@ -48,12 +49,18 @@ The official stack is published under the **`@evenrealities` npm scope**:
 - **576×288 px, monochrome green, 4-bit grayscale (16 intensity levels).** No RGB.
 - **~1200 nits Micro-LED** (notebookcheck).
 - **Native teleprompter mode: exactly 10 lines/page, ~25 chars/line, ~7 lines visible at once.**
-- **Image containers reported limited to ~200×100 px; animation frames ~30×30 px** (Zenn SDK
-  article — *blog quality*). **Treat as a hypothesis until verified** — a refuted competing
-  claim suggested 576×136 1-bit BMP via the older EvenDemoApp path.
-
-> ⚠️ Tension to resolve on hardware: is the usable image surface **200×100** (SDK container)
-> or near **full-width 576**? This directly determines how much math fits per page.
+- **Image containers: each `ImageContainerProperty` is 20–288 px wide × 20–144 px tall**
+  (`confidence: HIGH` — from `@evenrealities/even_hub_sdk@0.0.10` type definitions, PB
+  `Width 20~288 / Height 20~144`). The rumored "~200×100" cap was just the official
+  `image` template's *chosen* size, **not** a hard limit — **REFUTED as a limit**.
+- **The full 576×288 surface IS addressable.** A single image can't span it (≤288×144), but a
+  page may hold **up to 4 image containers** (`imageObject` max_count 4) + up to 8 text + 12
+  total, so a **2×2 tile of 288×144 images covers the entire 576×288 surface**. Text/event
+  containers can already be full-surface (576×288). ✅ **CONFIRMED eyes-on-glass (2026-06-20):**
+  the 4-tile checkerboard rendered full-surface. ⚠️ **BUT very slow** — pushing 4 tiles
+  (4× serial `updateImageRawData` over BLE) took many seconds. **Implication for scroll:** do
+  **not** repaint the full surface per frame; push a single image region per step (or only the
+  changed tile). This is a binding constraint on Iterations 3–4.
 
 ## 4. BLE protocol — `confidence: HIGH for G1, MEDIUM for G2`
 
@@ -81,12 +88,22 @@ evenrealities.com/teleprompter-glasses):
 2. **Fixed speed** — a consistent WPM setting.
 3. **Manual** — via the **Even R1 smart ring** or **tapping the G2 TouchPad**.
 
-> ⚠️ These are **native first-party features**. Whether a **custom SDK web app** can hook the
-> same TouchPad / R1 input events is **unconfirmed** — this is a key open question for our
-> on-glasses speed control. Fallback: drive autoscroll from a `setInterval` in the WebView and
-> set speed from the companion phone UI.
+> ✅ **CONFIRMED (Iteration 0, SDK types):** custom web apps **do** receive glasses input.
+> `bridge.onEvenHubEvent` delivers `OsEventTypeList` gestures —
+> `CLICK_EVENT`(0, tap), `DOUBLE_CLICK_EVENT`(3), `SCROLL_TOP_EVENT`(1), `SCROLL_BOTTOM_EVENT`(2)
+> — and `Sys_ItemEvent.eventSource` (`EventSourceType`) distinguishes the source:
+> **right touchpad** (`TOUCH_EVENT_FROM_GLASSES_R`), **left touchpad** (`..._GLASSES_L`), and the
+> **R1 ring** (`TOUCH_EVENT_FROM_RING`). So on-glasses speed control is viable.
+> Caveats: (a) input is captured by a **text/list container with `isEventCapture: 1`** — image
+> containers can't capture, so a full-surface text layer must sit behind the images;
+> (b) **taps/double-taps/lifecycle arrive via `sysEvent`, scrolls via `textEvent`** (scroll events
+> carry no `eventSource`); (c) `CLICK_EVENT === 0` and protobuf omits zero-valued fields, so a tap
+> arrives as a `sysEvent` with `eventType === undefined` — coalesce before comparing.
+> Still **pending eyes-on-glass**: confirming the physical gesture→event mapping (e.g. which
+> swipe direction is SCROLL_TOP, whether the ring actually emits these) on real hardware.
+> Fallback remains: drive autoscroll from a `setInterval` and set speed from the phone UI.
 
-## 6. Math rendering — `confidence: MEDIUM (engineering inference)`
+## 6. Math rendering — `confidence: MEDIUM (engineering inference) / HIGH for legibility (eyes-on-glass)`
 
 - **No existing G2 math/LaTeX project was found.** This is novel territory.
 - LaTeX-grade math **cannot** be rendered as text (25 char/line limit).
@@ -94,6 +111,12 @@ evenrealities.com/teleprompter-glasses):
   **4-bit grayscale** → send as image. Use **Floyd–Steinberg dithering** and **invert to
   white-on-black** (KaTeX renders dark-on-transparent) to preserve thin strokes (fraction bars,
   Σ, Greek) at low bit depth.
+- ✅ **CONFIRMED eyes-on-glass (Iteration 0, 2026-06-20):** dense math (fraction bar + Σ with
+  limits + sub/superscripts) is **perfectly legible at 4-bit**. The **ideal glyph scale is the
+  `formula-small` probe** — a formula drawn into a **~220×80 container** (serif, base font
+  ≈ 27 px in that probe). The **`formula-large` (288×144) probe was too big** — unnecessarily
+  large. **Pipeline target for Iteration 1:** calibrate KaTeX output so glyph heights match
+  `formula-small`, not `formula-large`. (Probes generated by `scripts/gen-test-images.mjs`.)
 - Mature LaTeX→image references: `DMOJ/texoid`, `mneri/pnglatex`, `klatexformula`.
 
 ## 7. Similar projects landscape — `confidence: MEDIUM`
@@ -111,17 +134,52 @@ evenrealities.com/teleprompter-glasses):
 
 ---
 
-## Open questions — VALIDATE THESE FIRST (block the design)
+## Open questions — RESOLVED in Iteration 0 (2026-06-20)
 
-1. **Input access:** Does the EvenHub SDK expose **TouchPad tap / R1 ring** events to
-   third-party web apps? (Determines on-glasses speed control.)
-2. **Image API:** What exactly does `even_hub_sdk` accept for images — grayscale PNG up to
-   200×100? Does sending an image **bypass** the 10-line teleprompter page structure or must it
-   be wrapped in page packets?
-3. **Payload/MTU:** A 200×100 4-bit image ≈ 10 KB. Does the SDK **chunk transparently** or must
-   we fragment manually?
-4. **Full-surface mode:** Can a custom app use the **full 576×288** as a canvas, or is content
-   always constrained to the narrow teleprompter column?
+Answered from `@evenrealities/even_hub_sdk@0.0.10` type definitions + the official
+`even-realities/evenhub-templates` **`image`** template (authoritative for the API), and
+**confirmed eyes-on-glass on real G2 hardware on 2026-06-20** by running the spike (`src/main.ts`).
+
+1. **Input access — ✅ YES.** `bridge.onEvenHubEvent` exposes tap / double-tap / scroll from the
+   **glasses touchpads (L/R)** and the **R1 ring**, with `eventSource` identifying which. Requires a
+   text container with `isEventCapture: 1` to capture; taps→`sysEvent`, scrolls→`textEvent`;
+   `CLICK_EVENT===0` is omitted on the wire. *Eyes-on-glass:* confirm gesture→event direction & that
+   the ring emits events. (See §5.)
+2. **Image API — ✅ Send ENCODED bytes; it bypasses the teleprompter.** `bridge.updateImageRawData`
+   takes a `Uint8Array` of **encoded PNG/JPEG bytes** for a given `ImageContainerProperty`; the host
+   **decodes, resizes to the container, and converts to 4-bit grayscale itself** (returns
+   `imageToGray4Failed` if conversion fails). We do **not** pre-pack 4-bit pixels, and images are
+   their own containers — **not** wrapped in the 10-line teleprompter page structure.
+3. **Payload/MTU — ✅ Transparent.** `updateImageRawData` accepts the whole `imageData` in one call;
+   the SDK's fragmentation fields (`mapSessionId/mapTotalSize/mapFragmentIndex/...`) are marked
+   *reserved/unused* — the host chunks internally. **Constraint:** image updates must be **serial**
+   (one in flight at a time) — the adapter enforces this with a promise queue.
+4. **Full-surface mode — ✅ YES, via tiling, but SLOW.** A single image container is ≤288×144, but a
+   page can hold **up to 4 image containers**, so a **2×2 grid of 288×144 tiles covers the full
+   576×288** — confirmed eyes-on-glass (Probe 3). ⚠️ **Pushing 4 tiles is very slow** (4× serial
+   `updateImageRawData` over BLE, many seconds). **Do not repaint the full surface per scroll
+   frame** — push one image region per step, or update only the changed tile. (See §3.)
+
+5. **Math legibility & target size — ✅ CONFIRMED.** Dense math reads perfectly at 4-bit. **Ideal
+   scale = the `formula-small` probe (~220×80 container)**; the `formula-large` (288×144) probe is
+   too big. Iteration 1 calibrates KaTeX output to the `formula-small` scale. (See §6.)
+
+### Iteration-0 spike (this repo) — how it was run on hardware
+- `npm install && npm run gen:test-images` → builds 3 probe images into `public/test/`.
+- Local preview: `npm run dev` (Vite on :5173), optionally `npm run simulate` (`evenhub-simulator`).
+- **On real glasses (the flow that worked):**
+  1. Enable **Developer Mode**: sign in at **hub.evenrealities.com/login**, then **force-quit** the
+     Even Realities phone app and reopen → an **Even Hub** tab (top-right) appears.
+  2. `npm run dev`, then `npx evenhub qr --url http://<LAN-IP>:5173` (use the **current** `en0` IP —
+     it's DHCP and changes; `ipconfig getifaddr en0`).
+  3. In the app: **Even Hub → Scan QR** → point at the terminal QR. App loads in the phone WebView,
+     glasses render within ~1s. **No auth token needed** for local QR testing. (`evenhub pack` is only
+     for packaged distribution.)
+- ⚠️ Don't confuse with **Even Terminal** (`@evenrealities/even-terminal`) — a *separate* product
+  that mirrors a laptop AI agent (Claude Code/Codex) onto the glasses and asks for an auth token.
+  That is **not** our path.
+- The app cycles 3 probes (**tap**=next, **double-tap**=exit) and logs every gesture + send-result on
+  the phone panel and the glasses status line — that's how the *eyes-on-glass* answers were read.
 
 ## Caveats
 

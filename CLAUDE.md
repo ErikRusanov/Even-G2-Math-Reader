@@ -12,7 +12,17 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
 
 ## Status
 
-- **2026-06-20:** Research complete (see `docs/`). **No code yet.** Next step is a hardware spike.
+- **2026-06-20:** Research complete (see `docs/`).
+- **2026-06-20 — Iteration 0 DONE (incl. eyes-on-glass on real G2):** Vite+TS scaffold,
+  `src/glasses/` SDK adapter (image push + input + layout/tiling), 3 probe images, spike harness
+  (`src/main.ts`). 4 blocking questions resolved (SDK types + `image` template): image API = send
+  encoded PNG/JPEG per container (≤288×144, ≤4 tiled → full 576×288), host does 4-bit; chunking
+  transparent but sends serial; **input (touchpad L/R + R1 ring) available** via `onEvenHubEvent`.
+  **Hardware-confirmed:** math reads perfectly at 4-bit; **target glyph scale = `formula-small`
+  (~220×80 container)**, `formula-large` (288×144) too big; full 576×288 via 4 tiles works **but is
+  very slow** (4× serial BLE pushes) → **never repaint the full surface per scroll frame**. Ran via
+  Developer Mode + `evenhub qr` → Even Hub tab → Scan QR (no token; **not** Even Terminal).
+- **Next: Iteration 1** — KaTeX → 4-bit pipeline, calibrated to the `formula-small` scale.
 
 ## The one thing to understand
 
@@ -37,15 +47,21 @@ Web app → authenticate with `evenhub-cli` → **QR sideload** to the Even Hub 
 `evenhub-simulator` for local iteration before touching hardware. Official docs:
 https://hub.evenrealities.com/docs
 
-## VALIDATE FIRST (blocks the design — do a hardware spike)
+## VALIDATE FIRST — ✅ RESOLVED in Iteration 0 (details in `docs/01` "Open questions — RESOLVED")
 
-1. Does the SDK expose **TouchPad / R1 ring** input to third-party web apps? (on-glasses speed control)
-2. **Image API**: what dimensions/format does `even_hub_sdk` accept? Does an image **bypass** the
-   10-line teleprompter page structure? (community reports a ~200×100 px container — unconfirmed)
-3. **Payload/MTU**: does the SDK chunk large images transparently, or must we fragment manually?
-4. Can a custom app use the **full 576×288** surface, or only the narrow teleprompter column?
+1. **TouchPad / R1 input → YES.** `onEvenHubEvent` delivers tap/double-tap/scroll from glasses
+   touchpads (L/R) and the R1 ring; needs a text container with `isEventCapture: 1` to capture.
+2. **Image API → send encoded PNG/JPEG bytes** per image container (≤288×144); host decodes +
+   converts to 4-bit. Images are their own containers — they **bypass** the 10-line teleprompter.
+   (The "~200×100" report was REFUTED as a limit — it was just the template's chosen size.)
+3. **Payload/MTU → transparent**, but `updateImageRawData` calls must be **serial**.
+4. **Full 576×288 → YES via 4 tiled 288×144 image containers** (2×2); text/event layers can be
+   full-surface directly.
 
-Resolve these before locking the rendering/scroll design.
+✅ **Confirmed eyes-on-glass (2026-06-20):** math is legible at 4-bit (target scale ≈ `formula-small`
+~220×80; `formula-large` 288×144 too big); 4 tiles render full-surface **but slowly** (don't repaint
+the whole surface per scroll frame). Gesture→event *direction* mapping still to be nailed down when
+on-glasses control is wired (Iteration 5).
 
 ## Docs
 
