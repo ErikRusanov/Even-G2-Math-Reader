@@ -33,7 +33,28 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   scroll); every sample reads cleanly. `src/main.ts` is a calibration harness (sweep `{6,7,8,9,10}`
   × 5 dense formulas, emulated bright-green preview on the phone). Below ~6 the sub/superscript tier
   starts to blur.
-- **Next: Iteration 2** — library load + file selection (`src/library/`, `.md` + frontmatter).
+- **2026-06-20 — Iteration 2 DONE (library + file selection):** `src/library/` loads the content
+  set and the app gets its real shell. `frontmatter.ts` (tiny `---` block splitter, no YAML dep) +
+  `load.ts` (Vite `import.meta.glob('/content/*.md', '?raw', eager)` → bundled offline, no fetch) →
+  `LibraryEntry[]` sorted by `id` (natural sort). `src/ui/library.ts` = two phone-WebView screens
+  with a trivial router: **Library** (files by `title`, math-count + prose snippet) → **File**
+  (frontmatter + body rendered as a readable document: prose via `markdown-it`, **all** math —
+  inline `$…$` AND display `$$…$$` — to crisp MathJax SVG via `texToInlineSvg` (a 2nd MathJax doc
+  with `fontCache:'none'` so many equations share one page without `<use>`-id collisions). This is a
+  human PHONE preview, deliberately sharp/scalable — NOT the 4-bit dithered glasses output, which is
+  Iter 3). `main.ts`
+  now just mounts the app (Iter-1 calibration harness lives in git history). **Format confirmed on
+  real `cm` content:** 3 faithful files in `content/` (`bilet01/09/25.md`, LaTeX + Cyrillic) parse
+  clean (frontmatter + 1/5/5 display + 35/42/54 inline math, dollars balanced) and every display
+  formula renders error-free. Added **MathJax `macros`** map (mirrors `preamble-compact.tex`:
+  `\R \eps \norm \scal \sign \diag \le …`) so `.md` keeps source LaTeX verbatim. Added deps
+  `markdown-it` + `@types/markdown-it`. **Glasses are NOT blank in the menu:** an Even Hub app only
+  shows on-glass once it creates a startup page + writes a container, so the adapter gained a
+  full-surface **`message`** text region (id 102, above the status line) + `setMessage()`, and
+  `main.ts` connects best-effort, builds a text-only page (`setLayout([])`), and mirrors the current
+  screen (library hint / file title) into it — menus ride the native text path; dense-math IMAGE
+  paging is Iter 3 (which overlays image slots on the `message` region and clears it).
+- **Next: Iteration 3** — static paged render to the glasses (parse → ribbon → slice → cache → push).
 
 ## The one thing to understand
 

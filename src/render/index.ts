@@ -115,5 +115,5 @@ async function encodePng(image: ImageData): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-export { texToSvg } from './mathjax'
+export { texToSvg, texToInlineSvg } from './mathjax'
 export { ditherTo4bit } from './dither'

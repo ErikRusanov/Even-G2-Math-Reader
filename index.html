@@ -17,7 +17,9 @@
         -webkit-text-size-adjust: 100%;
         overscroll-behavior: none;
       }
-      #app { display: flex; height: 100%; }
+      /* Block flow + page scroll so long files scroll naturally; the screen
+         centers itself horizontally via its own max-width + auto margins. */
+      #app { min-height: 100%; }
     </style>
   </head>
   <body>

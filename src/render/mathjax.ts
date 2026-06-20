@@ -36,15 +36,75 @@ export interface TexSvg {
 // reuse it for every conversion.
 let adaptor: LiteAdaptor | null = null
 let doc: MathDocument<unknown, unknown, unknown> | null = null
+// A second document for crisp ON-SCREEN previews (the phone reading view).
+let previewDoc: MathDocument<unknown, unknown, unknown> | null = null
+
+// Custom macros used throughout the source `cm` lecture notes (defined in
+// `preamble-compact.tex`). Teaching them to MathJax lets the `.md` content keep
+// the original LaTeX verbatim — no rewrite of every \norm/\eps/\scal per file.
+// Keep in sync with preamble-compact.tex when new macros appear in content.
+const TEX_MACROS: Record<string, string | [string, number]> = {
+  R: '\\mathbb{R}',
+  C: '\\mathbb{C}',
+  Z: '\\mathbb{Z}',
+  N: '\\mathbb{N}',
+  eps: '\\varepsilon',
+  dx: '\\,dx',
+  dt: '\\,dt',
+  le: '\\leqslant',
+  ge: '\\geqslant',
+  rank: '\\operatorname{rk}',
+  diag: '\\operatorname{diag}',
+  sign: '\\operatorname{sign}',
+  norm: ['\\left\\lVert #1 \\right\\rVert', 1],
+  abs: ['\\left\\lvert #1 \\right\\rvert', 1],
+  scal: ['\\left( #1, #2 \\right)', 2],
+}
+
+function ensureAdaptor(): LiteAdaptor {
+  if (!adaptor) {
+    adaptor = liteAdaptor()
+    RegisterHTMLHandler(adaptor)
+  }
+  return adaptor
+}
 
 function ensureDoc() {
-  if (doc && adaptor) return { doc, adaptor }
-  adaptor = liteAdaptor()
-  RegisterHTMLHandler(adaptor)
-  const tex = new TeX({ packages: AllPackages })
-  const svg = new SVG({ fontCache: 'local' })
-  doc = mathjax.document('', { InputJax: tex, OutputJax: svg })
-  return { doc, adaptor }
+  const a = ensureAdaptor()
+  if (!doc) {
+    // 'local' caches glyphs as <use> refs into the SVG's own <defs> — fine for
+    // the dither pipeline, which rasterizes one self-contained SVG at a time.
+    doc = mathjax.document('', {
+      InputJax: new TeX({ packages: AllPackages, macros: TEX_MACROS }),
+      OutputJax: new SVG({ fontCache: 'local' }),
+    })
+  }
+  return { doc, adaptor: a }
+}
+
+function ensurePreviewDoc() {
+  const a = ensureAdaptor()
+  if (!previewDoc) {
+    // 'none' inlines glyph paths (no <use>/<defs> ids), so MANY equations can be
+    // dropped into ONE HTML page without cross-equation id collisions.
+    previewDoc = mathjax.document('', {
+      InputJax: new TeX({ packages: AllPackages, macros: TEX_MACROS }),
+      OutputJax: new SVG({ fontCache: 'none' }),
+    })
+  }
+  return { doc: previewDoc, adaptor: a }
+}
+
+/**
+ * LaTeX → self-contained SVG markup for crisp on-screen display (NOT the 4-bit
+ * glasses pipeline). The SVG inherits `currentColor` and carries inline
+ * `vertical-align` + `ex` sizing, so it scales and baseline-aligns with the
+ * surrounding text when dropped into HTML. `display=false` gives inline metrics.
+ */
+export function texToInlineSvg(latex: string, display = false): string {
+  const { doc, adaptor } = ensurePreviewDoc()
+  const node = doc.convert(latex, { display }) as Parameters<LiteAdaptor['innerHTML']>[0]
+  return adaptor.innerHTML(node)
 }
 
 function parseEx(svg: string, attr: 'width' | 'height'): number {

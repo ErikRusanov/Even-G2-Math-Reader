@@ -52,6 +52,11 @@ export * from './types'
 // must not collide with these.
 const EVENT_LAYER_ID = 100
 const STATUS_ID = 101
+// Full-surface text region for native prose: menus, file titles, reading
+// hints. Sits BEHIND any image slots, so math images (Iteration 3) overlay it;
+// when no images are shown it carries the whole screen (the library/menu UI).
+const MESSAGE_ID = 102
+const STATUS_HEIGHT = 28
 
 function imageName(id: number): string {
   return `img-${id}`
@@ -146,14 +151,30 @@ export class GlassesAdapter {
 
     const status = new TextContainerProperty({
       xPosition: 0,
-      yPosition: SURFACE.height - 28,
+      yPosition: SURFACE.height - STATUS_HEIGHT,
       width: SURFACE.width,
-      height: 28,
+      height: STATUS_HEIGHT,
       borderWidth: 0,
       borderColor: 0,
       paddingLength: 4,
       containerID: STATUS_ID,
       containerName: 'status',
+      content: ' ',
+      isEventCapture: 0,
+    })
+
+    // Main native-text region (everything above the status line). Holds menu /
+    // file-title / hint prose; cleared by callers that paint images over it.
+    const message = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 0,
+      width: SURFACE.width,
+      height: SURFACE.height - STATUS_HEIGHT,
+      borderWidth: 0,
+      borderColor: 0,
+      paddingLength: 8,
+      containerID: MESSAGE_ID,
+      containerName: 'message',
       content: ' ',
       isEventCapture: 0,
     })
@@ -170,9 +191,10 @@ export class GlassesAdapter {
         }),
     )
 
+    // Order matters: message (back) → eventLayer (capture, blank) → status.
     return {
-      containerTotalNum: imageObject.length + 2,
-      textObject: [eventLayer, status],
+      containerTotalNum: imageObject.length + 3,
+      textObject: [message, eventLayer, status],
       imageObject,
     }
   }
@@ -213,6 +235,14 @@ export class GlassesAdapter {
     // Keep the chain alive even if one push rejects.
     this.queue = run.catch(() => undefined)
     return run
+  }
+
+  /** Update the main native-text region (menu / title / hint prose). */
+  async setMessage(text: string): Promise<void> {
+    const bridge = this.requireBridge()
+    await bridge.textContainerUpgrade(
+      new TextContainerUpgrade({ containerID: MESSAGE_ID, containerName: 'message', content: text }),
+    )
   }
 
   /** Update the on-glasses status line. */
