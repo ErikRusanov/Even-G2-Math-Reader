@@ -54,7 +54,28 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   `main.ts` connects best-effort, builds a text-only page (`setLayout([])`), and mirrors the current
   screen (library hint / file title) into it — menus ride the native text path; dense-math IMAGE
   paging is Iter 3 (which overlays image slots on the `message` region and clears it).
-- **Next: Iteration 3** — static paged render to the glasses (parse → ribbon → slice → cache → push).
+- **2026-06-20 — Iteration 3 DONE (static paged render to glasses):** a selected `.md` is now
+  rendered to full-surface page bitmaps and read page-by-page on the glasses. New modules:
+  `src/render/document.ts` (hand-rolled Canvas-2D typesetter — DOM-to-canvas is impossible because
+  HTML rasterization needs `<foreignObject>`, which taints the canvas: `parseBlocks` →
+  `tokenizeInline` → greedy line-wrap → paginate into **576×288 black-on-white pages**, drawing
+  prose + inline `$…$` + display `$$…$$` math; inline math is baseline-aligned via the SVG's
+  `vertical-align` depth, now surfaced through `texToSvg().exDepth` + `render/index.ts texToImage`),
+  `src/render/slice.ts` (**dither the whole 576×288 page ONCE** so Floyd–Steinberg has no tile
+  seams, then crop into the 4 `layoutTile2x2` quadrants + encode PNG per tile; also emits a
+  green-tinted phone-preview data URL = the REAL 4-bit output, not Iter-2's sharp SVG),
+  `src/cache/index.ts` (FNV-1a content hash + promise-memo, keyed by render-version+id+body so
+  re-opening a file is instant), `src/teleprompter/pages.ts` (`paginateDocument(entry)` →
+  `PagedDoc{pages:[{tiles,preview}]}`), `src/ui/prompter.ts` (reader screen: progress bar →
+  manual ‹ Назад / Вперёд ›, mirrors each page on the phone). Glasses now have **two modes** behind
+  the adapter: menu = native text; reading = the **4-tile IMAGE layout** — `main.ts` implements a
+  `GlassesControl` (`enterReading`/`showPage`/`exitReading`) so the UI never imports the SDK, and
+  switches `setLayout(layoutTile2x2())` ↔ `setLayout([])` on entering/leaving the reader. 4 tiles
+  pushed **serially** per page-flip (slow but fine for manual paging; per-frame repaint is the
+  Iter-4 autoscroll concern). Parser cross-checks the Iter-2 facts exactly (1/5/5 display,
+  35/42/54 inline). `tsc` + `vite build` clean. **Eyes-on-glass calibration of font/scale still
+  pending** (defaults in `DEFAULT_DOC_CONFIG`: fontPx 19, lineGap 9, displayPxPerEx 9, inline 8).
+- **Next: Iteration 4** — autoscroll with phone-side speed control (the working MVP).
 
 ## The one thing to understand
 

@@ -103,6 +103,34 @@ Treat each library file as a **single tall rendered "ribbon"**:
    so a line is never cut in half.
 4. Autoscroll = advance strips on a timer; manual = tap/ring advances one strip.
 
+### As built (Iteration 3, 2026-06-20)
+
+Implemented in `src/render/document.ts` + `src/render/slice.ts` + `src/teleprompter/pages.ts`,
+cached via `src/cache/index.ts`. Two deliberate changes from the sketch above:
+
+- **Block-aware pagination instead of pixel overlap.** Rather than slicing one tall ribbon at
+  fixed strip heights (which cuts lines and needs overlap fudge), we lay out the document into
+  *rows* (wrapped text lines + whole display-math images) and **greedily pack rows into 576×288
+  pages**. A row never straddles a page boundary and a display formula is never split, so no
+  overlap is needed. Inter-block spacers at a page top are dropped so pages start flush.
+- **Full-surface pages, dithered-then-tiled.** Each page is the true surface (576×288). It's
+  composed **black-on-white** (a hand-rolled Canvas-2D typesetter — we can't rasterize DOM/HTML
+  because `<foreignObject>` taints the canvas), then **dithered ONCE over the whole 576×288**
+  (`ditherTo4bit`, white-on-black) so Floyd–Steinberg error diffuses with no seam at tile borders,
+  and only then **cropped into the 4 `layoutTile2x2` quadrants** (each ≤288×144) and PNG-encoded.
+  Cropping a quantized image is lossless, so the tiles join seamlessly on-glass.
+
+The typesetter draws **prose + inline `$…$` + display `$$…$$`** in one flow. Inline math is
+baseline-aligned to the prose using the SVG's `vertical-align` depth (surfaced as
+`texToSvg().exDepth`, scaled to px in `render/index.ts texToImage`). Markdown emphasis/code markers
+are stripped (not styled) at 4-bit. Defaults live in `DEFAULT_DOC_CONFIG` (fontPx 19, lineGap 9,
+display `pxPerEx` 9, inline `pxPerEx` 8) and are **still to be calibrated eyes-on-glass** — the
+single knob set that tunes legibility for the reading view, analogous to Iter-1's formula sweep.
+
+Manual paging pushes all **4 tiles serially per flip** (acceptable; the "never repaint the full
+surface per *frame*" warning targets autoscroll, Iteration 4). A green-tinted phone preview mirrors
+the exact 4-bit bitmap so phone and glasses can't desync.
+
 ## Fallbacks / alternatives (ranked)
 
 1. **Image-per-page (primary plan).** Most faithful; depends on the SDK image API.

@@ -16,31 +16,56 @@
 import MarkdownIt from 'markdown-it'
 import { loadLibrary, type LibraryEntry } from '../library/load'
 import { texToInlineSvg } from '../render'
+import { mountReader, type GlassesControl } from './prompter'
 
 const md = new MarkdownIt({ html: false, linkify: false, breaks: false })
 
-type Screen = { kind: 'library' } | { kind: 'file'; entry: LibraryEntry }
+type Screen =
+  | { kind: 'library' }
+  | { kind: 'file'; entry: LibraryEntry }
+  | { kind: 'reader'; entry: LibraryEntry }
 
 /** What screen the phone is on — so the host can mirror it onto the glasses. */
 export type ScreenInfo =
   | { kind: 'library'; count: number }
   | { kind: 'file'; title: string; id: string }
+  | { kind: 'reader'; title: string; id: string }
+
+/** A glasses control that does nothing — used when no bridge is connected. */
+const NULL_GLASSES: GlassesControl = {
+  available: false,
+  async enterReading() {},
+  async showPage() {},
+  async exitReading() {},
+  async setStatus() {},
+}
 
 export interface AppHooks {
   /** Fired on every navigation, so the caller can reflect state on-glass. */
   onScreenChange?: (info: ScreenInfo) => void
+  /** Glasses control passed through to the reader screen (Iteration 3). */
+  glasses?: GlassesControl
 }
 
 export function mountApp(root: HTMLElement, hooks: AppHooks = {}): void {
   const library = loadLibrary()
+  const glasses = hooks.glasses ?? NULL_GLASSES
   let screen: Screen = { kind: 'library' }
 
   const open = (entry: LibraryEntry) => {
     screen = { kind: 'file', entry }
     render()
   }
+  const read = (entry: LibraryEntry) => {
+    screen = { kind: 'reader', entry }
+    render()
+  }
   const back = () => {
     screen = { kind: 'library' }
+    render()
+  }
+  const backToFile = (entry: LibraryEntry) => {
+    screen = { kind: 'file', entry }
     render()
   }
 
@@ -48,9 +73,13 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): void {
     if (screen.kind === 'library') {
       renderLibrary(root, library, open)
       hooks.onScreenChange?.({ kind: 'library', count: library.length })
-    } else {
-      renderFile(root, screen.entry, back)
+    } else if (screen.kind === 'file') {
+      renderFile(root, screen.entry, back, read)
       hooks.onScreenChange?.({ kind: 'file', title: screen.entry.title, id: screen.entry.id })
+    } else {
+      const entry = screen.entry
+      hooks.onScreenChange?.({ kind: 'reader', title: entry.title, id: entry.id })
+      mountReader(root, entry, glasses, { onBack: () => backToFile(entry) })
     }
   }
 
@@ -83,7 +112,7 @@ function renderLibrary(root: HTMLElement, library: LibraryEntry[], open: (e: Lib
 
 // ── File screen ──────────────────────────────────────────────────────────────
 
-function renderFile(root: HTMLElement, entry: LibraryEntry, back: () => void) {
+function renderFile(root: HTMLElement, entry: LibraryEntry, back: () => void, read: (e: LibraryEntry) => void) {
   const segments = segmentBody(entry.body)
   const { display, inline } = countMath(entry.body)
 
@@ -103,12 +132,14 @@ function renderFile(root: HTMLElement, entry: LibraryEntry, back: () => void) {
       <span><b>файл</b> <code>${escapeHtml(entry.path)}</code></span>
       <span><b>математика</b> ${display} display · ${inline} inline</span>
     </div>
+    <button class="read" id="read">▶ Читать на очках</button>
     <div class="doc">${bodyHtml}</div>
-    <p class="note">Превью на телефоне (чёткий SVG). На очках — 4-bit растр,
-      постранично со скроллом — это итерация 3.</p>
+    <p class="note">Сверху — превью на телефоне (чёткий SVG). Кнопка «Читать на очках»
+      рендерит файл в 4-bit растр и листает его постранично — итерация 3.</p>
   `)
 
   root.querySelector('#back')!.addEventListener('click', back)
+  root.querySelector('#read')!.addEventListener('click', () => read(entry))
 }
 
 /** LaTeX → crisp inline/display SVG for the phone preview (falls back to source). */
@@ -205,6 +236,10 @@ const STYLE = `<style>
   .row-meta { font-size:12px; color:#8a8a8a; margin-top:4px; }
   .back { background:#2a2a2a; color:#e5e5e5; border:1px solid #444; border-radius:6px;
           padding:7px 12px; font-size:13px; cursor:pointer; margin-bottom:12px; }
+  .read { display:block; width:100%; box-sizing:border-box; background:#15240f; color:#9be29b;
+          border:1px solid #2f4d22; border-radius:8px; padding:12px; font-size:15px; font-weight:600;
+          cursor:pointer; margin-bottom:14px; }
+  .read:hover { background:#1b3013; border-color:#3c6a2c; }
   .fm { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12px; color:#9a9a9a;
         background:#161616; border:1px solid #2c2c2c; border-radius:8px; padding:10px 12px; margin-bottom:14px; }
   .fm b { color:#9be29b; font-weight:600; }

@@ -72,6 +72,42 @@ export async function renderFormula(latex: string, opts: RenderOptions = {}): Pr
   return { bytes, width: w, height: h }
 }
 
+/** A rasterized math glyph image ready to composite onto the reading ribbon. */
+export interface RasterMath {
+  /** Loaded, untainted (paths-only SVG) image — safe to `drawImage` + read back. */
+  img: HTMLImageElement
+  width: number
+  height: number
+  /** Depth below baseline in px — `drawImage` top = baseline − (height − depth). */
+  depth: number
+}
+
+/**
+ * LaTeX → a loaded `HTMLImageElement` at a concrete pixel size, plus baseline
+ * depth. Used by the document ribbon (Iteration 3) to draw inline AND display
+ * math onto a shared canvas in black-on-white (the ribbon is inverted+dithered
+ * as a whole afterwards). MathJax SVG is paths-only, so drawing it never taints
+ * the canvas — the composed ribbon stays readable via getImageData.
+ */
+export async function texToImage(latex: string, opts: RenderOptions = {}): Promise<RasterMath> {
+  const pxPerEx = opts.pxPerEx ?? DEFAULTS.pxPerEx
+  const display = opts.display ?? DEFAULTS.display
+  const { svg, exWidth, exHeight, exDepth } = texToSvg(latex, display)
+
+  let w = exWidth * pxPerEx
+  let h = exHeight * pxPerEx
+  let d = exDepth * pxPerEx
+  let fit = 1
+  if (opts.maxW) fit = Math.min(fit, opts.maxW / w)
+  if (opts.maxH) fit = Math.min(fit, opts.maxH / h)
+  w = Math.max(1, Math.round(w * fit))
+  h = Math.max(1, Math.round(h * fit))
+  d = Math.round(d * fit)
+
+  const img = await loadSvgImage(svg, w, h)
+  return { img, width: w, height: h, depth: d }
+}
+
 // ── DOM rasterization helpers (browser/WebView only) ────────────────────────
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
@@ -81,8 +117,8 @@ function makeCanvas(w: number, h: number): HTMLCanvasElement {
   return c
 }
 
-/** Draw a self-contained SVG onto a white canvas at w×h and read back RGBA. */
-function rasterizeSvg(svg: string, w: number, h: number): Promise<ImageData> {
+/** Load a self-contained SVG as an <img> forced to exactly w×h pixels. */
+export function loadSvgImage(svg: string, w: number, h: number): Promise<HTMLImageElement> {
   // Force explicit pixel dimensions on the root so the <img> rasterizes at our
   // exact target size; the viewBox keeps the vector content scaled correctly.
   const sized = svg
@@ -92,21 +128,25 @@ function rasterizeSvg(svg: string, w: number, h: number): Promise<ImageData> {
 
   return new Promise((resolve, reject) => {
     const img = new Image()
-    img.onload = () => {
-      const canvas = makeCanvas(w, h)
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, w, h)
-      ctx.drawImage(img, 0, 0, w, h)
-      resolve(ctx.getImageData(0, 0, w, h))
-    }
+    img.onload = () => resolve(img)
     img.onerror = () => reject(new Error('SVG rasterization failed'))
     img.src = url
   })
 }
 
+/** Draw a self-contained SVG onto a white canvas at w×h and read back RGBA. */
+export async function rasterizeSvg(svg: string, w: number, h: number): Promise<ImageData> {
+  const img = await loadSvgImage(svg, w, h)
+  const canvas = makeCanvas(w, h)
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+  ctx.drawImage(img, 0, 0, w, h)
+  return ctx.getImageData(0, 0, w, h)
+}
+
 /** ImageData → encoded PNG bytes. */
-async function encodePng(image: ImageData): Promise<Uint8Array> {
+export async function encodePng(image: ImageData): Promise<Uint8Array> {
   const canvas = makeCanvas(image.width, image.height)
   canvas.getContext('2d')!.putImageData(image, 0, 0)
   const blob: Blob = await new Promise((resolve, reject) =>

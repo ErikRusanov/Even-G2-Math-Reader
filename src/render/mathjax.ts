@@ -30,6 +30,10 @@ export interface TexSvg {
   exWidth: number
   /** Intrinsic height in `ex` units. */
   exHeight: number
+  /** Depth below the baseline in `ex` units (MathJax's `vertical-align`,
+   *  sign-flipped to positive). Needed to baseline-align INLINE math against
+   *  surrounding prose when compositing the reading ribbon (Iteration 3). */
+  exDepth: number
 }
 
 // MathJax's handler registration is global, so build the document once and
@@ -112,6 +116,12 @@ function parseEx(svg: string, attr: 'width' | 'height'): number {
   return m ? parseFloat(m[1]) : 0
 }
 
+/** Depth below baseline, from the root SVG's `vertical-align` (negative → positive). */
+function parseDepth(svg: string): number {
+  const m = svg.match(/vertical-align:\s*(-?[\d.]+)ex/)
+  return m ? Math.max(0, -parseFloat(m[1])) : 0
+}
+
 /** Convert a LaTeX string to a self-contained SVG plus its intrinsic ex size. */
 export function texToSvg(latex: string, display = true): TexSvg {
   const { doc, adaptor } = ensureDoc()
@@ -119,5 +129,10 @@ export function texToSvg(latex: string, display = true): TexSvg {
   // ever produces LiteElements, so this cast is safe.
   const node = doc.convert(latex, { display }) as Parameters<LiteAdaptor['innerHTML']>[0]
   const svg = adaptor.innerHTML(node)
-  return { svg, exWidth: parseEx(svg, 'width'), exHeight: parseEx(svg, 'height') }
+  return {
+    svg,
+    exWidth: parseEx(svg, 'width'),
+    exHeight: parseEx(svg, 'height'),
+    exDepth: parseDepth(svg),
+  }
 }
