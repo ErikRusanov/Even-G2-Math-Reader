@@ -14,7 +14,8 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import MarkdownIt from 'markdown-it'
-import { loadLibrary, type LibraryEntry } from '../library/load'
+import { loadLibrary, mergeLibrary, type LibraryEntry } from '../library/load'
+import { loadImported, putImported, deleteImported } from '../library/store'
 import { texToInlineSvg } from '../render'
 import { mountReader, type GlassesControl } from './prompter'
 import { menuGestureToAction } from '../teleprompter/gestures'
@@ -52,11 +53,42 @@ export interface AppHandle {
 }
 
 export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
-  const library = loadLibrary()
+  let library = loadLibrary()
   const glasses = hooks.glasses ?? NULL_GLASSES
   let screen: Screen = { kind: 'library' }
   // Glasses-only: which library row is highlighted (the phone uses taps instead).
   let menuSel = 0
+
+  // Pull any phone-imported files out of IndexedDB and merge them in. Async, so
+  // the bundled list paints first; we re-render the library once they arrive.
+  void loadImported().then(imported => {
+    if (imported.length === 0) return
+    library = mergeLibrary(library, imported)
+    if (screen.kind === 'library') render()
+  })
+
+  // Import `.md` picked from the phone: read text → persist to IndexedDB →
+  // merge into the live list. Skips non-`.md` and unreadable files silently.
+  const importFiles = async (files: FileList) => {
+    for (const file of Array.from(files)) {
+      if (!/\.md$/i.test(file.name)) continue
+      try {
+        const entry = await putImported(file.name, await file.text())
+        library = mergeLibrary(library, [entry])
+      } catch {
+        /* skip unreadable file */
+      }
+    }
+    menuSel = 0
+    if (screen.kind === 'library') render()
+  }
+
+  const removeFile = async (entry: LibraryEntry) => {
+    await deleteImported(entry.id)
+    library = library.filter(e => e.id !== entry.id)
+    if (menuSel >= library.length) menuSel = Math.max(0, library.length - 1)
+    render()
+  }
 
   const open = (entry: LibraryEntry) => {
     screen = { kind: 'file', entry }
@@ -77,7 +109,7 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
 
   function render() {
     if (screen.kind === 'library') {
-      renderLibrary(root, library, open)
+      renderLibrary(root, library, open, importFiles, removeFile)
     } else if (screen.kind === 'file') {
       renderFile(root, screen.entry, back, read)
     } else {
@@ -97,7 +129,7 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
   function renderGlasses() {
     if (screen.kind === 'library') {
       void glasses.setMessage(glassesLibraryText(library, menuSel))
-      void glasses.setStatus('tap — read · swipe — browse')
+      void glasses.setStatus(library.length === 0 ? 'import .md on the phone' : 'tap — read · swipe — browse')
     } else if (screen.kind === 'file') {
       void glasses.setMessage(`${truncate(screen.entry.title, 24)}\n\ntap — read on glasses`)
       void glasses.setStatus('tap — read · 2× — back')
@@ -163,7 +195,7 @@ function truncate(s: string, max: number): string {
  */
 function glassesLibraryText(library: LibraryEntry[], sel: number): string {
   const total = library.length
-  if (total === 0) return 'Library is empty\n\nNo files in /content.'
+  if (total === 0) return 'G2 Math Reader\n\nNo files yet.\nImport .md on the phone.'
   const WINDOW = 5
   const start = Math.max(0, Math.min(sel - (WINDOW >> 1), total - WINDOW))
   const end = Math.min(total, start + WINDOW)
@@ -176,26 +208,52 @@ function glassesLibraryText(library: LibraryEntry[], sel: number): string {
 
 // ── Library screen ───────────────────────────────────────────────────────────
 
-function renderLibrary(root: HTMLElement, library: LibraryEntry[], open: (e: LibraryEntry) => void) {
+function renderLibrary(
+  root: HTMLElement,
+  library: LibraryEntry[],
+  open: (e: LibraryEntry) => void,
+  importFiles: (files: FileList) => void,
+  removeFile: (e: LibraryEntry) => void,
+) {
   const items = library
     .map(
       (e, i) => `
-      <button class="row" data-i="${i}">
-        <div class="row-title">${escapeHtml(e.title)}</div>
-        <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} formulas · ${snippet(e.body)}</div>
-      </button>`,
+      <div class="row" data-i="${i}">
+        <button class="row-open" data-i="${i}">
+          <div class="row-title">${escapeHtml(e.title)}</div>
+          <div class="row-meta">${escapeHtml(e.id)} · ${countMath(e.body).display} formulas${
+            e.source === 'imported' ? ' · imported' : ''
+          } · ${snippet(e.body)}</div>
+        </button>
+        ${e.source === 'imported' ? `<button class="row-del" data-i="${i}" title="Remove">✕</button>` : ''}
+      </div>`,
     )
     .join('')
 
   root.innerHTML = shell(`
     <h1 class="h1">Library</h1>
     <p class="sub">${library.length} files · tap to open</p>
-    <div class="list">${items || '<p class="sub">No files in <code>/content</code>.</p>'}</div>
+    <label class="import">
+      + Import .md from phone
+      <input id="import-input" type="file" accept=".md,text/markdown,text/plain" multiple hidden />
+    </label>
+    <p class="note">Imported files are stored on the phone (offline) and survive restarts.</p>
+    <div class="list">${items || '<p class="sub">No files. Import some <code>.md</code> above.</p>'}</div>
   `)
 
-  root.querySelectorAll<HTMLButtonElement>('.row').forEach(btn =>
+  root.querySelectorAll<HTMLButtonElement>('.row-open').forEach(btn =>
     btn.addEventListener('click', () => open(library[Number(btn.dataset.i)])),
   )
+  root.querySelectorAll<HTMLButtonElement>('.row-del').forEach(btn =>
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      removeFile(library[Number(btn.dataset.i)])
+    }),
+  )
+  const input = root.querySelector<HTMLInputElement>('#import-input')!
+  input.addEventListener('change', () => {
+    if (input.files && input.files.length) importFiles(input.files)
+  })
 }
 
 // ── File screen ──────────────────────────────────────────────────────────────
@@ -316,10 +374,19 @@ const STYLE = `<style>
             font-family:system-ui,-apple-system,sans-serif; }
   .h1 { font-size:19px; font-weight:600; margin:0 0 4px; color:#E5E5E5; }
   .sub { color:#919191; font-size:13px; margin:0 0 14px; }
+  .import { display:block; text-align:center; background:#15240f; color:#9be29b; cursor:pointer;
+            border:1px dashed #2f4d22; border-radius:8px; padding:11px; font-size:14px; font-weight:600;
+            margin-bottom:6px; }
+  .import:hover { background:#1b3013; border-color:#3c6a2c; }
   .list { display:flex; flex-direction:column; gap:8px; }
-  .row { text-align:left; background:#1a1a1a; border:1px solid #333; border-radius:8px;
-         padding:12px 14px; cursor:pointer; color:#E5E5E5; }
+  .row { display:flex; align-items:stretch; background:#1a1a1a; border:1px solid #333; border-radius:8px;
+         overflow:hidden; color:#E5E5E5; }
   .row:hover { border-color:#4a4a4a; background:#202020; }
+  .row-open { flex:1; text-align:left; background:none; border:0; color:inherit; cursor:pointer;
+              padding:12px 14px; }
+  .row-del { background:none; border:0; border-left:1px solid #333; color:#a06a6a; cursor:pointer;
+             padding:0 14px; font-size:14px; }
+  .row-del:hover { background:#2a1414; color:#e29b9b; }
   .row-title { font-size:15px; font-weight:600; color:#9be29b; }
   .row-meta { font-size:12px; color:#8a8a8a; margin-top:4px; }
   .back { background:#2a2a2a; color:#e5e5e5; border:1px solid #444; border-radius:6px;
