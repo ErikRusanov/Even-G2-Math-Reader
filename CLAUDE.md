@@ -237,6 +237,27 @@ Example target content: numerical-methods lecture notes (`../cm/main-compact.pdf
   untouched — both input paths drive the same `open`/`read`/`back` closures. `tsc` + `vite build`
   clean. **Eyes-on-glass pending:** confirm swipe ↑ = previous file (vs next) reads right, and that
   the `> ` marker + Cyrillic titles render legibly in the native list.
+- **2026-06-20 — Persistent imported library (host-native KV):** imported files used to **vanish
+  after one session** — they were saved in the **WebView's IndexedDB**, but inside the packaged
+  `.ehpk` the Even Hub WebView runs from an **opaque/ephemeral origin**, so its IndexedDB (and
+  `localStorage`) is wiped between launches. Fix: persist to the **phone's NATIVE key-value store**
+  via the SDK bridge (`even_hub_sdk` exposes `setLocalStorage`/`getLocalStorage`, host-backed, NOT
+  the WebView's) — survives WebView reload + app restart. **Adapter** (`src/glasses/index.ts`) gained
+  `getStorage(key)→string|null` / `setStorage(key,value)` wrapping the bridge (`'' → null`, so a
+  tombstone reads as absent). **`src/library/store.ts` rewritten** around a tiny `KVBackend`
+  (`get`/`set`, missing→null, delete = `set('')`): since the host KV **can't enumerate keys**, the
+  format is now an explicit **index key** `g2reader:index` (JSON `[{id,name}]`) **+ one key per file**
+  `g2reader:file:<id>` → raw `.md` (was a single IndexedDB object store with `getAll`). Default
+  backend = **IndexedDB** (rewritten as a generic `{k,v}` KV, `DB_VERSION→2`, store `kv`) for
+  desktop-browser dev (stable origin, no bridge); a **memory** backend covers no-IDB. `main.ts`
+  installs the **host backend** via the new `store.setStorageBackend(...)` the moment the bridge is up
+  (before `app.onGlassesReady()`), so future imports WRITE to the durable store. **Load timing:** the
+  first `loadImported()` at mount uses the default (IndexedDB) backend and on hardware comes back
+  empty; `mountApp` now exposes `reloadLibrary()` and **re-runs it in `onGlassesReady`** — that
+  bridge-ready reload is what actually surfaces the persisted library on-glass (`mergeLibrary` dedups
+  by id, so re-running is idempotent). UI/store call sites (`loadImported`/`putImported`/
+  `deleteImported` signatures) are unchanged. `tsc` + `vite build` clean. **Eyes-on-glass pending:**
+  confirm files imported in one session reappear after fully closing + reopening the app on the phone.
 - **Next: Iteration 6** — Polish: dithering/legibility tuning on real lectures, `IndexedDB` strip
   cache (survives WebView reload), reading-position persistence per file, final `src/glasses/`
   cleanup for the current SDK version.

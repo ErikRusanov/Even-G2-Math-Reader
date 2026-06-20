@@ -15,6 +15,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import { mountApp } from './ui/library'
+import { setStorageBackend } from './library/store'
 import type { GlassesControl } from './ui/prompter'
 import type { Tile } from './render/slice'
 import { GlassesAdapter, layoutTile1x2, type InputEvent } from './glasses'
@@ -80,6 +81,27 @@ void (async () => {
     await glasses.connect()
     await glasses.setLayout([]) // text-only page: message + status + event layer
     glassesReady = true
+    // Persist the imported library in the phone's NATIVE key-value store (via the
+    // SDK bridge), not the WebView's IndexedDB — the latter is wiped between
+    // launches in the packaged app, so files imported in one session disappeared.
+    // Installing this backend before app.onGlassesReady() makes the reload below
+    // read from (and future imports write to) the durable host store.
+    setStorageBackend({
+      async get(key) {
+        try {
+          return await glasses.getStorage(key)
+        } catch {
+          return null
+        }
+      },
+      async set(key, value) {
+        try {
+          await glasses.setStorage(key, value)
+        } catch {
+          /* best-effort */
+        }
+      },
+    })
     // One bridge subscription fans out to every registered handler (menu + reader).
     glasses.onInput(event => {
       for (const handler of inputHandlers) handler(event)

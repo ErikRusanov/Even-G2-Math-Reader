@@ -275,6 +275,24 @@ export class GlassesAdapter {
     })
   }
 
+  /**
+   * Read a key from the host's PERSISTENT key-value store. This lives in the
+   * Even Hub phone app's native storage (not the WebView), so it survives the
+   * WebView being reloaded and the app being restarted — unlike the WebView's
+   * own IndexedDB/localStorage, which the packaged runtime wipes between
+   * launches. Returns null for a missing/empty key. (Used by the imported-file
+   * store to keep the library across sessions.)
+   */
+  async getStorage(key: string): Promise<string | null> {
+    const v = await this.requireBridge().getLocalStorage(key)
+    return v === '' || v == null ? null : v
+  }
+
+  /** Write a key to the host's persistent key-value store (see getStorage). */
+  async setStorage(key: string, value: string): Promise<void> {
+    await this.requireBridge().setLocalStorage(key, value)
+  }
+
   /** Close the app on the glasses. */
   async shutdown(exitMode = 1): Promise<void> {
     await this.requireBridge().shutDownPageContainer(exitMode)

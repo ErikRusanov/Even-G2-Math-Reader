@@ -61,13 +61,22 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
   // Glasses-only: which library row is highlighted (the phone uses taps instead).
   let menuSel = 0
 
-  // Pull the phone-imported files out of IndexedDB. Async, so the (empty) list
-  // paints first; we re-render the library once they arrive.
-  void loadImported().then(imported => {
+  // Pull the phone-imported files out of persistent storage and fold them into
+  // the live list. Async, so the (empty) list paints first. Runs again once the
+  // glasses bridge is up (see onGlassesReady): the host-native KV backend is
+  // installed only then, so the FIRST load (default IndexedDB backend) may come
+  // back empty inside the packaged app — the bridge-ready reload is what
+  // actually surfaces the persisted library there. mergeLibrary dedups by id,
+  // so re-running is idempotent.
+  const reloadLibrary = async () => {
+    const imported = await loadImported()
     if (imported.length === 0) return
     library = mergeLibrary(library, imported)
+    if (menuSel >= library.length) menuSel = Math.max(0, library.length - 1)
     if (screen.kind === 'library') render()
-  })
+    else renderGlasses()
+  }
+  void reloadLibrary()
 
   // Import files picked from the phone: read text → persist to IndexedDB →
   // merge into the live list. `.tex` is converted to `.md` first and the
@@ -193,7 +202,13 @@ export function mountApp(root: HTMLElement, hooks: AppHooks = {}): AppHandle {
   glasses.onInput(handleMenuGesture)
   render()
 
-  return { onGlassesReady: renderGlasses }
+  // Once the bridge is up the host KV backend is installed: reload the library
+  // from persistent storage (which repaints the menu on-glass too).
+  return {
+    onGlassesReady: () => {
+      void reloadLibrary().then(renderGlasses)
+    },
+  }
 }
 
 // ── On-glass menu text (native-text path, ~25 chars/line) ─────────────────────
