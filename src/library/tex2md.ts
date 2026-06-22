@@ -31,16 +31,25 @@ const THEOREM_ENVS: Record<string, string> = {
 
 // Math segments are masked before prose transforms so commands INSIDE math
 // (\textbf, --, ~, \bigl …) are never touched, then restored at the end.
+//
+// Tokens are wrapped in private-use chars (U+E000 … U+E001) and carry a type tag
+// (I/D) + index: `\uE000I7\uE001`. Self-delimiting on BOTH sides — they never
+// merge with an adjacent letter/digit and need NO surrounding spaces, so prose
+// transforms may freely trim around them (list items, run-in headings, table
+// cells) and the ORIGINAL spacing of the source is preserved exactly on restore.
+const MASK_OPEN = '\uE000'
+const MASK_CLOSE = '\uE001'
+
 function maskMath(text: string, store: string[]): string {
   // Display first ($$…$$), then inline ($…$), so the inline pass can't bite
   // into a display block.
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, m) => {
     store.push(m)
-    return ` DISP${store.length - 1} `
+    return `${MASK_OPEN}D${store.length - 1}${MASK_CLOSE}`
   })
   text = text.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, (_, m) => {
     store.push(m)
-    return ` INL${store.length - 1} `
+    return `${MASK_OPEN}I${store.length - 1}${MASK_CLOSE}`
   })
   return text
 }
@@ -48,13 +57,8 @@ function maskMath(text: string, store: string[]): string {
 function unmaskMath(text: string, store: string[]): string {
   // Inline → `$…$`; display → fenced `$$` on their own lines (what parseBlocks
   // in src/render/document.ts requires for multi-line display math).
-  // The delimiter spaces are OPTIONAL on restore: prose transforms (list items,
-  // theorem run-ins, flattened table cells) trim text and can strip a token's
-  // surrounding space — without the `?` those tokens would leak as literal
-  // `INL7`/`DISP3`. With one space present it's consumed exactly as before, so
-  // inter-word spacing is preserved.
-  text = text.replace(/ ?INL(\d+) ?/g, (_, i) => `$${store[+i]}$`)
-  text = text.replace(/ ?DISP(\d+) ?/g, (_, i) => {
+  text = text.replace(/\uE000I(\d+)\uE001/g, (_, i) => `$${store[+i]}$`)
+  text = text.replace(/\uE000D(\d+)\uE001/g, (_, i) => {
     const body = store[+i]
       .replace(/^\s*\n/, '')
       .replace(/\n\s*$/, '')
@@ -110,6 +114,32 @@ function unwrapCommand(text: string, name: string, fn: (arg: string) => string):
       continue
     }
     out += text.slice(i, at) + fn(r.args[0])
+    i = r.end
+  }
+  return out
+}
+
+// Unwrap `\name{…}…` with `n` brace-balanced args via `fn`. A whole-command guard
+// (the char after the name must be `{`) stops a short name from biting a longer
+// one — `\thm` won't consume `\thmm`, `\dfn` won't consume `\dfnt` — so the passes
+// are order-independent. Args may nest braces / hold masked-math tokens.
+function unwrapMacro(text: string, name: string, n: number, fn: (...args: string[]) => string): string {
+  const marker = `\\${name}`
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const at = text.indexOf(marker, i)
+    if (at === -1) {
+      out += text.slice(i)
+      break
+    }
+    const r = text[at + marker.length] === '{' ? readBraceArgs(text, at + marker.length, n) : null
+    if (!r) {
+      out += text.slice(i, at + marker.length)
+      i = at + marker.length
+      continue
+    }
+    out += text.slice(i, at) + fn(...r.args)
     i = r.end
   }
   return out
@@ -239,6 +269,21 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   const warnings: string[] = []
   let t = tex.replace(/\r\n/g, '\n')
 
+  // 0a. Strip LaTeX line comments (`%…`), keeping escaped `\%`. Standalone docs
+  //     (the cm `minimum`/`tutorial` cheatsheets) carry banner/explanatory
+  //     comments the ticket fragments don't; left in, they'd leak as prose.
+  t = t.replace(/(?<!\\)%.*$/gm, '')
+
+  // 0b. Full standalone documents: keep only the body between \begin{document}
+  //     and \end{document} (drops \documentclass, the inlined preamble, local
+  //     macro defs, etc.). Ticket fragments have no \begin{document} → untouched.
+  const docBegin = t.indexOf('\\begin{document}')
+  if (docBegin !== -1) {
+    t = t.slice(docBegin + '\\begin{document}'.length)
+    const docEnd = t.indexOf('\\end{document}')
+    if (docEnd !== -1) t = t.slice(0, docEnd)
+  }
+
   // 1. Title + id. Prefer \bilet{N}{Title} (gives a stable cm-NN id); else fall
   //    back to the first \section{…}; else the filename stem. Both are read with
   //    brace-balanced parsing so a title with nested braces (e.g. a math arg like
@@ -249,8 +294,18 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   const biletAt = t.match(/\\bilet\b/)
   const biletArgs = biletAt ? readBraceArgs(t, biletAt.index! + biletAt[0].length, 2) : null
   if (biletAt && biletArgs) {
-    id = `cm-${biletArgs.args[0].trim().padStart(2, '0')}`
+    const num = biletArgs.args[0].trim()
+    id = `cm-${num.padStart(2, '0')}`
     title = biletArgs.args[1].trim()
+    // The listing title must lead with the ticket number, but authors are
+    // inconsistent about writing the "Билет N." prefix in the title arg (some
+    // do, some start straight with the topic). The number is ALWAYS the first
+    // \bilet arg, so derive the prefix here when it's absent — uniform list, no
+    // need to hand-edit every .tex. (A title that already starts with "Билет"
+    // is left as-is, so cheatsheets titled "Билет 0." aren't double-prefixed.)
+    // (NB: `\b` is ASCII-only in JS regex, so it never matches after the Cyrillic
+    // "т" — test for following whitespace instead to detect an existing prefix.)
+    if (num && !/^Билет\s/.test(title)) title = `Билет ${num}. ${title}`
     t = t.slice(0, biletAt.index!) + t.slice(biletArgs.end)
   } else {
     const secAt = t.match(/\\section\*?/)
@@ -310,6 +365,34 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   t = unwrapCommand(t, 'проверить', s => ` *(проверить: ${s.trim()})* `)
   t = unwrapCommand(t, 'нетисточника', s => `*(нет источника: ${s.trim()})*`)
 
+  // 5c. Compact cheatsheet macros from the cm `minimum`/`tutorial` preambles —
+  //     bold run-in headings, like the theorem environments below. Run post-mask
+  //     (bodies hold masked math + nested envs, e.g. a \prop wrapping enumerate)
+  //     and before list/section passes so the unwrapped content is processed.
+  //       \dfnt{термин}{…} / \dfn{…}         — определение
+  //       \thm{название}{…} / \thmm{…}        — теорема / формулировка
+  //       \prop{…}                            — свойства
+  //       \alg{название}{…}                   — алгоритм (краткое описание)
+  t = unwrapMacro(t, 'dfnt', 2, (term, body) => `\n\n**Определение.** *${term.trim()}*: ${body.trim()}\n`)
+  t = unwrapMacro(t, 'dfn', 1, body => `\n\n**Определение.** ${body.trim()}\n`)
+  t = unwrapMacro(t, 'thm', 2, (name, body) => `\n\n**Теорема (${name.trim()}).** ${body.trim()}\n`)
+  t = unwrapMacro(t, 'thmm', 1, body => `\n\n**Теорема.** ${body.trim()}\n`)
+  t = unwrapMacro(t, 'prop', 1, body => `\n\n**Свойства.** ${body.trim()}\n`)
+  t = unwrapMacro(t, 'alg', 2, (name, body) => `\n\n**Алгоритм (${name.trim()}).** ${body.trim()}\n`)
+
+  // 5d. Title/cover scaffolding of a standalone doc (post-mask, before prose).
+  //     Unwrap groups that start with font declarations: `{\Large\bfseries X}` → X
+  //     (else the braces leak as literal text); drop structure/spacing commands
+  //     and text-mode line breaks `\\` / `\\[2pt]` (math `\\` is masked, so safe).
+  //     The `(?<![A-Za-z…])` guard keeps a standalone group `{\Large X}` distinct
+  //     from a command argument `\emph{\small X}` — only the former is unwrapped,
+  //     so the command's braces survive for its own handler below.
+  const FONT_DECL = 'tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge|bfseries|itshape|mdseries|upshape|normalfont|rmfamily|sffamily|ttfamily|em'
+  t = t.replace(new RegExp(`(?<![A-Za-z\\u0400-\\u04FF])\\{\\s*(?:\\\\(?:${FONT_DECL})\\b\\s*)+([^{}]*)\\}`, 'g'), (_, inner) => inner)
+  t = t.replace(/\\(?:maketitle|tableofcontents|newpage|clearpage|cleardoublepage|hrule)\b/g, '')
+  t = t.replace(/\\(?:vspace|vskip|hspace|hskip|vfill|hfill)\*?\s*(?:\{[^}]*\}|[0-9.]+\s*(?:pt|cm|mm|em|ex|in|baselineskip))?/g, '')
+  t = t.replace(/\\\\\s*(?:\[[^\]]*\])?/g, '\n')
+
   // 6. Theorem-like environments → bold run-in heading.
   for (const [env, word] of Object.entries(THEOREM_ENVS)) {
     const re = new RegExp(`\\\\begin\\{${env}\\}(?:\\[((?:[^\\[\\]]|\\[[^\\]]*\\])*)\\])?`, 'g')
@@ -355,7 +438,7 @@ export function texToMarkdown(tex: string, fallbackStem = 'document'): TexConver
   // 10. Drop formatting-only commands BEFORE emphasis so e.g. `\emph{\small X}`
   //     trims to `*X*`, not `* X*` (a leading space breaks markdown emphasis).
   t = t.replace(
-    /\\(?:small|normalfont|bfseries|itshape|footnotesize|centering|medskip|smallskip|bigskip|noindent|indent|par)\b/g,
+    /\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge|normalfont|bfseries|itshape|mdseries|upshape|rmfamily|sffamily|ttfamily|em|centering|medskip|smallskip|bigskip|noindent|indent|par)\b/g,
     '',
   )
 

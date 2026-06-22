@@ -52,6 +52,7 @@ const TEX_MACROS: Record<string, string | [string, number]> = {
   C: '\\mathbb{C}',
   Z: '\\mathbb{Z}',
   N: '\\mathbb{N}',
+  F: '\\mathbb{F}',
   eps: '\\varepsilon',
   dx: '\\,dx',
   dt: '\\,dt',
