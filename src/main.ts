@@ -16,6 +16,7 @@
 
 import { mountApp } from './ui/library'
 import { setStorageBackend } from './library/store'
+import { initPageStore } from './cache/page-store'
 import type { GlassesControl } from './ui/prompter'
 import type { Tile } from './render/slice'
 import { GlassesAdapter, layoutTile1x2, type InputEvent } from './glasses'
@@ -86,22 +87,26 @@ void (async () => {
     // launches in the packaged app, so files imported in one session disappeared.
     // Installing this backend before app.onGlassesReady() makes the reload below
     // read from (and future imports write to) the durable host store.
-    setStorageBackend({
-      async get(key) {
+    const hostBackend = {
+      async get(key: string) {
         try {
           return await glasses.getStorage(key)
         } catch {
           return null
         }
       },
-      async set(key, value) {
+      async set(key: string, value: string) {
         try {
           await glasses.setStorage(key, value)
         } catch {
           /* best-effort */
         }
       },
-    })
+    }
+    setStorageBackend(hostBackend)
+    // Page-tile cache uses the same host KV backend. Install it here so
+    // renders that happen before the bridge is up fall back to IndexedDB/memory.
+    initPageStore(hostBackend)
     // One bridge subscription fans out to every registered handler (menu + reader).
     glasses.onInput(event => {
       for (const handler of inputHandlers) handler(event)

@@ -251,11 +251,18 @@ function wrapBoxes(
 
 // ── Page rendering ──────────────────────────────────────────────────────────────
 
-/** Render an entire document body into full-surface black-on-white page bitmaps. */
-export async function renderDocumentPages(
+/**
+ * Render a document body into page bitmaps, delivering each page via a callback
+ * as soon as it's painted. `onTotalKnown` fires once after math renders and
+ * layout is done — before any `onPage` calls — so callers know the final page
+ * count without waiting for all pages to be painted.
+ */
+export async function streamDocumentPages(
   body: string,
   config: Partial<DocRenderConfig> = {},
-): Promise<ImageData[]> {
+  onPage: (bitmap: ImageData, index: number, total: number) => Promise<void>,
+  onTotalKnown?: (total: number) => void,
+): Promise<void> {
   const cfg = { ...DEFAULT_DOC_CONFIG, ...config }
   const blocks = parseBlocks(body)
   const usableW = cfg.pageW - 2 * cfg.pad
@@ -358,13 +365,13 @@ export async function renderDocumentPages(
 
   // Paginate: pack rows top-to-bottom; a row that overflows starts a new page.
   // Leading spacers at a page top are dropped so pages start flush.
-  const pages: Row[][] = []
+  const pageRows: Row[][] = []
   let cur: Row[] = []
   let y = 0
   for (const row of rows) {
     if (row.spacer && cur.length === 0) continue
     if (cur.length && y + row.height > usableH) {
-      pages.push(cur)
+      pageRows.push(cur)
       cur = []
       y = 0
       if (row.spacer) continue
@@ -372,11 +379,14 @@ export async function renderDocumentPages(
     cur.push(row)
     y += row.height
   }
-  if (cur.length) pages.push(cur)
-  if (pages.length === 0) pages.push([]) // always emit at least one (blank) page
+  if (cur.length) pageRows.push(cur)
+  if (pageRows.length === 0) pageRows.push([]) // always emit at least one (blank) page
 
-  // Paint each page black-on-white and read back RGBA.
-  return pages.map(pageRows => {
+  const total = pageRows.length
+  onTotalKnown?.(total)
+
+  // Paint each page black-on-white and deliver via callback.
+  for (let i = 0; i < total; i++) {
     const canvas = document.createElement('canvas')
     canvas.width = cfg.pageW
     canvas.height = cfg.pageH
@@ -385,12 +395,22 @@ export async function renderDocumentPages(
     ctx.fillRect(0, 0, cfg.pageW, cfg.pageH)
     ctx.fillStyle = '#000000'
     let yy = cfg.pad
-    for (const row of pageRows) {
+    for (const row of pageRows[i]) {
       row.draw(ctx, yy)
       yy += row.height
     }
-    return ctx.getImageData(0, 0, cfg.pageW, cfg.pageH)
-  })
+    await onPage(ctx.getImageData(0, 0, cfg.pageW, cfg.pageH), i, total)
+  }
+}
+
+/** Render an entire document body into full-surface black-on-white page bitmaps. */
+export async function renderDocumentPages(
+  body: string,
+  config: Partial<DocRenderConfig> = {},
+): Promise<ImageData[]> {
+  const result: ImageData[] = []
+  await streamDocumentPages(body, config, async bmp => { result.push(bmp) })
+  return result
 }
 
 // Re-exported so the page model can encode previews without reaching into index.

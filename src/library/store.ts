@@ -55,6 +55,11 @@ export function setStorageBackend(b: KVBackend): void {
   backend = b
 }
 
+/** Expose the current backend for shared use (e.g. the tile cache). */
+export function getBackend(): KVBackend {
+  return backend
+}
+
 function makeDefaultBackend(): KVBackend {
   return typeof indexedDB !== 'undefined' ? idbBackend() : memoryBackend()
 }

@@ -17,7 +17,7 @@
 // innerHTML churn, so the slider keeps focus and the image never flickers.
 // ─────────────────────────────────────────────────────────────────────────
 
-import { paginateDocument, type Page, type PagedDoc } from '../teleprompter/pages'
+import { openDocument, type LiveDoc, type Page } from '../teleprompter/pages'
 import { ScrollEngine, type ScrollState } from '../teleprompter/engine'
 import { loadSpeed, saveSpeed, formatSpeed } from '../teleprompter/speed'
 import { gestureToAction } from '../teleprompter/gestures'
@@ -63,18 +63,15 @@ export function mountReader(
   hooks: ReaderHooks,
 ): void {
   let disposed = false
+  let readerStarted = false
   renderLoading(root, entry, 0, 0)
-  // Mirror the loader onto the glasses too. We're still in menu/text mode here
-  // (the image layout is only entered later in runReader), so a native-text
-  // message lands — the phone already shows the same progress.
+  // Mirror the loader onto the glasses. We're still in menu/text mode here
+  // (the image layout is only entered later in runReader).
   void glasses.setMessage(glassesLoadingText(entry, 0, 0)).catch(() => {})
-  void glasses.setStatus('preparing pages…').catch(() => {})
+  void glasses.setStatus('rendering math…').catch(() => {})
 
-  // The page render can take seconds; let the glasses abort it (double-tap /
-  // app-exit) so a mis-tapped file isn't a dead wait. This handler lives only
-  // for the loading phase — runReader installs its own once reading starts, and
-  // we unsubscribe before handing off. We're still in menu/text mode here, so
-  // cancelling just returns to the File screen (no image layout to tear down).
+  // Let the user abort the render phase from the glasses (double-tap / app-exit).
+  // This handler lives only until the reader takes over.
   const offLoad = glasses.onInput(event => {
     if (disposed) return
     if (gestureToAction(event.type) === 'exit') {
@@ -84,45 +81,58 @@ export function mountReader(
     }
   })
 
-  void (async () => {
-    let doc: PagedDoc
-    try {
-      doc = await paginateDocument(entry, (done, total) => {
-        if (disposed) return
-        renderLoading(root, entry, done, total)
-        void glasses.setMessage(glassesLoadingText(entry, done, total)).catch(() => {})
-      })
-    } catch (err) {
-      offLoad()
-      if (!disposed) renderError(root, entry, String(err), hooks.onBack)
-      return
-    }
-    if (disposed) return
-
-    // Hand gesture control over to runReader before it subscribes its own.
+  const startReader = (liveDoc: LiveDoc) => {
+    if (readerStarted || disposed) return
+    readerStarted = true
     offLoad()
-
-    if (doc.pages.length === 0) {
+    if (liveDoc.totalPages === 0) {
       renderError(root, entry, 'document is empty — nothing to show', hooks.onBack)
       return
     }
-
-    await runReader(root, doc, entry, glasses, hooks, () => disposed, () => {
+    void runReader(root, liveDoc, entry, glasses, hooks, () => disposed, () => {
       disposed = true
     })
-  })()
+  }
+
+  // openDocument returns a LiveDoc immediately; pages arrive asynchronously.
+  // We update the loading screen as pages become available and start the reader
+  // the moment page 0 is ready — users don't have to wait for all N pages.
+  const liveDoc = openDocument(entry, {
+    onTotalKnown: total => {
+      if (disposed || readerStarted) return
+      renderLoading(root, entry, 0, total)
+      void glasses.setMessage(glassesLoadingText(entry, 0, total)).catch(() => {})
+      void glasses.setStatus('preparing pages…').catch(() => {})
+    },
+    onPageReady: index => {
+      if (index === 0) startReader(liveDoc)
+    },
+    onProgress: (done, total) => {
+      if (disposed || readerStarted) return
+      renderLoading(root, entry, done, total)
+      void glasses.setMessage(glassesLoadingText(entry, done, total)).catch(() => {})
+    },
+  })
+
+  // Handle render errors (complete rejects when the render pipeline throws).
+  void liveDoc.complete.catch(err => {
+    if (!disposed && !readerStarted) {
+      offLoad()
+      renderError(root, entry, String(err), hooks.onBack)
+    }
+  })
 }
 
 async function runReader(
   root: HTMLElement,
-  doc: PagedDoc,
+  doc: LiveDoc,
   entry: LibraryEntry,
   glasses: GlassesControl,
   hooks: ReaderHooks,
   isDisposed: () => boolean,
   markDisposed: () => void,
 ): Promise<void> {
-  const total = doc.pages.length
+  const total = doc.totalPages
   const initialSpeed = loadSpeed(entry.id)
 
   renderReader(root, doc, initialSpeed)
@@ -156,10 +166,12 @@ async function runReader(
   }
 
   // Paint a page on the phone (preview) and on the glasses (tiles). Awaited by the
-  // engine, so the next dwell starts only once the slow tile push has landed. The
-  // status line (page indicator + countdown) is driven by onState/onProgress.
+  // engine, so the next dwell starts only once the slow tile push has landed.
+  // waitForPage blocks if a page hasn't been rendered yet (possible when the user
+  // flips ahead faster than the background render completes — rare in practice
+  // since slicing is ~30 ms/page and pages are rendered in order).
   const showPage = async (index: number) => {
-    const page: Page = doc.pages[index]
+    const page: Page = await doc.waitForPage(index)
     els.image.src = page.preview
     els.counter.textContent = `${index + 1} / ${total}`
     await glasses.showPage(page.tiles).catch(() => {})
@@ -312,7 +324,7 @@ function pageSub(s: ScrollState): string {
   return s.playing ? `autoscroll · ${formatSpeed(s.secPerPage)}` : 'paused · press «Play»'
 }
 
-function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
+function renderReader(root: HTMLElement, doc: LiveDoc, initialSpeed: number) {
   root.innerHTML = shell(`
     <button class="back" id="back">← File</button>
     <h1 class="h1">${escapeHtml(doc.title)}</h1>
@@ -321,7 +333,7 @@ function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
       <img id="page" class="page" alt="page"/>
       <div class="dwell-track"><div class="dwell-fill" id="dwell"></div></div>
     </div>
-    <div class="meta"><span class="countdown" id="countdown"></span><span class="pos" id="counter">1 / ${doc.pages.length}</span></div>
+    <div class="meta"><span class="countdown" id="countdown"></span><span class="pos" id="counter">1 / ${doc.totalPages}</span></div>
     ${controlsHtml(initialSpeed)}
     <p class="note">What you see here is the real 4-bit raster sent to the glasses
       (top half 576×144, 2 tiles). Autoscroll holds the dwell on each page only
@@ -330,6 +342,7 @@ function renderReader(root: HTMLElement, doc: PagedDoc, initialSpeed: number) {
       previous, tap — pause/play.</p>
   `)
 }
+
 
 /** Native-text loader for the glasses while pages render (mirrors the phone bar). */
 function glassesLoadingText(entry: LibraryEntry, done: number, total: number): string {
